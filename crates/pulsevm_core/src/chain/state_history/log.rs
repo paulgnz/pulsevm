@@ -258,6 +258,12 @@ impl StateHistoryLog {
             match m.get(&block_num) {
                 Some(p) => *p,
                 None => {
+                    warn!(
+                        "[ship][{}] read_block NotFound: block_num={} not in map (map_len={})",
+                        self.name,
+                        block_num,
+                        m.len()
+                    );
                     return Err(ShLogError::NotFound(block_num));
                 }
             }
