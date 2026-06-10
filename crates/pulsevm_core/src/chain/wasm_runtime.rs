@@ -25,7 +25,7 @@ use crate::{
         name::Name,
         transaction::Action,
         webassembly::{
-            assert_sha224, assert_sha256, assert_sha512, check_transaction_authorization, current_time, db_end_i64, db_find_i64, db_get_i64, db_idx64_end, db_idx64_find_primary, db_idx64_find_secondary, db_idx64_lowerbound, db_idx64_next, db_idx64_previous, db_idx64_remove, db_idx64_store, db_idx64_update, db_idx64_upperbound, db_idx128_end, db_idx128_find_primary, db_idx128_find_secondary, db_idx128_lowerbound, db_idx128_next, db_idx128_previous, db_idx128_remove, db_idx128_store, db_idx128_update, db_idx128_upperbound, db_lowerbound_i64, db_next_i64, db_previous_i64, db_remove_i64, db_store_i64, db_update_i64, db_upperbound_i64, get_resource_limits, is_privileged, memmove, pulse_assert, read_action_data, require_auth2, require_recipient, set_action_return_value, set_privileged, set_resource_limits, sha224, sha256, sha512
+            PULSE_EXIT_SENTINEL, assert_sha224, assert_sha256, assert_sha512, check_transaction_authorization, current_time, db_end_i64, db_find_i64, db_get_i64, db_idx64_end, db_idx64_find_primary, db_idx64_find_secondary, db_idx64_lowerbound, db_idx64_next, db_idx64_previous, db_idx64_remove, db_idx64_store, db_idx64_update, db_idx64_upperbound, db_idx128_end, db_idx128_find_primary, db_idx128_find_secondary, db_idx128_lowerbound, db_idx128_next, db_idx128_previous, db_idx128_remove, db_idx128_store, db_idx128_update, db_idx128_upperbound, db_lowerbound_i64, db_next_i64, db_previous_i64, db_remove_i64, db_store_i64, db_update_i64, db_upperbound_i64, eosio_assert, eosio_assert_code, eosio_assert_message, eosio_exit, get_block_num, get_resource_limits, get_sender, is_privileged, memcmp, memcpy, memmove, memset, printdf, printhex, printi, printi128, printn, prints, prints_l, printsf, printqf, printui, printui128, pulse_assert, read_action_data, require_auth2, require_recipient, set_action_return_value, set_privileged, set_resource_limits, sha224, sha256, sha512
         },
     },
 };
@@ -220,6 +220,26 @@ impl WasmRuntime {
         let import_object = imports! {
             "env" => {
                 "memmove" => Function::new_typed_with_env(&mut store, &env, memmove),
+                "memcpy" => Function::new_typed_with_env(&mut store, &env, memcpy),
+                "memset" => Function::new_typed_with_env(&mut store, &env, memset),
+                "memcmp" => Function::new_typed_with_env(&mut store, &env, memcmp),
+                "prints" => Function::new_typed_with_env(&mut store, &env, prints),
+                "prints_l" => Function::new_typed_with_env(&mut store, &env, prints_l),
+                "printi" => Function::new_typed_with_env(&mut store, &env, printi),
+                "printui" => Function::new_typed_with_env(&mut store, &env, printui),
+                "printi128" => Function::new_typed_with_env(&mut store, &env, printi128),
+                "printui128" => Function::new_typed_with_env(&mut store, &env, printui128),
+                "printsf" => Function::new_typed_with_env(&mut store, &env, printsf),
+                "printdf" => Function::new_typed_with_env(&mut store, &env, printdf),
+                "printqf" => Function::new_typed_with_env(&mut store, &env, printqf),
+                "printn" => Function::new_typed_with_env(&mut store, &env, printn),
+                "printhex" => Function::new_typed_with_env(&mut store, &env, printhex),
+                "eosio_assert" => Function::new_typed_with_env(&mut store, &env, eosio_assert),
+                "eosio_assert_message" => Function::new_typed_with_env(&mut store, &env, eosio_assert_message),
+                "eosio_assert_code" => Function::new_typed_with_env(&mut store, &env, eosio_assert_code),
+                "eosio_exit" => Function::new_typed_with_env(&mut store, &env, eosio_exit),
+                "get_sender" => Function::new_typed_with_env(&mut store, &env, get_sender),
+                "get_block_num" => Function::new_typed_with_env(&mut store, &env, get_block_num),
                 "action_data_size" => Function::new_typed_with_env(&mut store, &env, action_data_size),
                 "read_action_data" => Function::new_typed_with_env(&mut store, &env, read_action_data),
                 "current_receiver" => Function::new_typed_with_env(&mut store, &env, current_receiver),
@@ -309,22 +329,30 @@ impl WasmRuntime {
         // Resume timer
         apply_context.resume_billing_timer()?;
 
-        let result = apply_func
-            .call(
-                &mut store,
-                receiver.as_u64() as i64,
-                action.account().as_u64() as i64,
-                action.name().as_u64() as i64,
-            )
-            .map_err(|e| {
+        let result = match apply_func.call(
+            &mut store,
+            receiver.as_u64() as i64,
+            action.account().as_u64() as i64,
+            action.name().as_u64() as i64,
+        ) {
+            Ok(()) => Ok(()),
+            // eosio_exit unwinds as a sentinel error but means successful termination
+            Err(e) if e.downcast_ref::<ChainError>().is_none() && e.message() == PULSE_EXIT_SENTINEL => {
+                Ok(())
+            }
+            Err(e) => {
                 // If this was originally `Err(ChainError)`, restore it
                 if let Some(chain_err) = e.downcast_ref::<ChainError>() {
-                    return chain_err.clone();
+                    Err(chain_err.clone())
+                } else {
+                    // Otherwise wrap it
+                    Err(ChainError::WasmRuntimeError(format!(
+                        "apply error: {}",
+                        e.message()
+                    )))
                 }
-
-                // Otherwise wrap it
-                ChainError::WasmRuntimeError(format!("apply error: {}", e.message()))
-            });
+            }
+        };
         let remaining_points: MeteringPoints = get_remaining_points(&mut store, &instance);
 
         match remaining_points {

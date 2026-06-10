@@ -40,6 +40,7 @@ struct ApplyContextInner {
     index64_cache: Index64IteratorCache,    // Cache for index64 iterators
     index128_cache: Index128IteratorCache,    // Cache for index128 iterators
     cpu_limit: i64,                         // CPU limit for the current action
+    pending_console: String,                // Console output accumulated by the current action
 }
 
 #[derive(Clone)]
@@ -92,6 +93,7 @@ impl ApplyContext {
                 index64_cache: Index64IteratorCache::new(),
                 index128_cache: Index128IteratorCache::new(),
                 cpu_limit,
+                pending_console: String::new(),
             })),
         })
     }
@@ -201,15 +203,40 @@ impl ApplyContext {
     }
 
     pub fn finalize_trace(&self, receipt: ActionReceipt) -> Result<(), ChainError> {
-        let inner = self.inner.read()?;
+        let mut inner = self.inner.write()?;
+        let console = std::mem::take(&mut inner.pending_console);
 
         self.trx_context
             .modify_action_trace(self.action_ordinal, |trace| {
                 trace.receipt = Some(receipt);
                 trace.set_elapsed((Utc::now().timestamp_micros() - inner.start) as u32);
                 trace.account_ram_deltas = inner.account_ram_deltas.clone();
+                trace.console = console;
             })?;
         Ok(())
+    }
+
+    pub fn console_append(&self, text: &str) -> Result<(), ChainError> {
+        let mut inner = self.inner.write()?;
+        inner.pending_console.push_str(text);
+        Ok(())
+    }
+
+    /// Receiver of the action that created the current one via `send_inline`,
+    /// or the empty name for top-level actions. Matches Leap `get_sender`.
+    pub fn sender(&self) -> Result<Name, ChainError> {
+        let trace = self.trx_context.get_action_trace(self.action_ordinal)?;
+        if trace.creator_action_ordinal > 0 {
+            let creator = self
+                .trx_context
+                .get_action_trace(trace.creator_action_ordinal)?;
+            return Ok(creator.receiver.clone());
+        }
+        Ok(Name::new(0))
+    }
+
+    pub fn block_num(&self) -> Result<u32, ChainError> {
+        self.trx_context.block_num()
     }
 
     pub fn require_authorization(

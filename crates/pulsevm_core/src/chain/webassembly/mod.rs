@@ -4,6 +4,12 @@ pub use action::*;
 mod authorization;
 pub use authorization::*;
 
+mod compat;
+pub use compat::*;
+
+mod console;
+pub use console::*;
+
 mod crypto;
 pub use crypto::*;
 

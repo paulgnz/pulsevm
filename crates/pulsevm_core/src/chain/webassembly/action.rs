@@ -69,3 +69,12 @@ pub fn set_action_return_value(
     env_data.set_action_return_value(return_value.into());
     Ok(())
 }
+
+#[inline]
+pub fn get_sender(env: FunctionEnvMut<WasmContext>) -> Result<u64, RuntimeError> {
+    env.data()
+        .apply_context()
+        .sender()
+        .map(|name| name.as_u64())
+        .map_err(|e| RuntimeError::new(e.to_string()))
+}

@@ -52,3 +52,10 @@ pub fn current_time(env: FunctionEnvMut<WasmContext>) -> Result<u64, RuntimeErro
 
     Ok(result as u64)
 }
+
+pub fn get_block_num(env: FunctionEnvMut<WasmContext>) -> Result<u32, RuntimeError> {
+    env.data()
+        .apply_context()
+        .block_num()
+        .map_err(|e| RuntimeError::new(e.to_string()))
+}

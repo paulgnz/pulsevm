@@ -357,6 +357,11 @@ impl TransactionContext {
         Ok(inner.pending_block_timestamp.clone())
     }
 
+    pub fn block_num(&self) -> Result<u32, ChainError> {
+        let inner = self.inner.read()?;
+        Ok(inner.trace.block_num)
+    }
+
     pub fn finalize(mut self) -> Result<TransactionResult, ChainError> {
         let now = TimePoint::now();
         let billed_cpu_time_us = self.get_billed_cpu_time(now)?;
