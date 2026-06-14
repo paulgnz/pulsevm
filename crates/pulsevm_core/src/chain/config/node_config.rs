@@ -12,6 +12,9 @@ pub struct NodeConfig {
     // Size of the memory mapped database in bytes
     #[serde(default = "default_db_size")]
     pub db_size: u64,
+    // Optional path to a JSON chainstate snapshot to bulk-load at genesis (Path-4 native import).
+    #[serde(default)]
+    pub snapshot_path: Option<String>,
 }
 
 fn default_db_size() -> u64 {
