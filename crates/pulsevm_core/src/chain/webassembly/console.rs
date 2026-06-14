@@ -4,10 +4,11 @@ use crate::wasm_runtime::WasmContext;
 
 // TODO: Implement console functions to log output from WASM modules. For now, these functions are no-ops to avoid unnecessary overhead in the current implementation.
 
+// Antelope `prints(const char* cstr)` — a single null-terminated pointer (NOT a
+// ptr+len pair; that's `prints_l`). Signature must be (i32)->().
 pub fn prints(
-    mut env: FunctionEnvMut<WasmContext>,
-    msg_ptr: WasmPtr<u8>,
-    msg_len: u32,
+    _env: FunctionEnvMut<WasmContext>,
+    _msg_ptr: WasmPtr<u8>,
 ) -> Result<(), RuntimeError> {
     Ok(())
 }
