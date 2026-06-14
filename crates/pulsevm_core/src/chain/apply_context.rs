@@ -414,8 +414,7 @@ impl ApplyContext {
             .db_find_i64(code, scope, table, id, &mut inner.keyval_cache)
         {
             Ok(itr) => {
-                spdlog::info!(
-                    "[DBG find_i64] code={} scope={} table={} id={} -> itr={}",
+                spdlog::error!("[DBG find_i64] code={} scope={} table={} id={} -> itr={}",
                     code, scope, table, id, itr
                 );
                 Ok(itr)
@@ -511,7 +510,7 @@ impl ApplyContext {
         let inner = self.inner.read()?;
         let obj = inner.keyval_cache.get(iterator)?;
         let s = obj.get_value().size();
-        spdlog::info!("[DBG get_i64] iterator={} row_size={} buffer_size={}", iterator, s, buffer_size);
+        spdlog::error!("[DBG get_i64] iterator={} row_size={} buffer_size={}", iterator, s, buffer_size);
         if buffer_size == 0 {
             return Ok(s as i32);
         }
