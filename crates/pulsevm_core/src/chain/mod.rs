@@ -13,6 +13,7 @@ pub mod mempool;
 pub mod pulse_contract;
 pub mod resource;
 pub mod resource_limits;
+pub mod snapshot_import;
 pub mod state_history;
 pub mod transaction;
 pub mod transaction_context;

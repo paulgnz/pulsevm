@@ -174,6 +174,25 @@ impl Controller {
             self.db.initialize_database(&genesis).map_err(|e| {
                 ChainError::GenesisError(format!("failed to initialize database: {}", e))
             })?;
+
+            // Path-4 native snapshot import: bulk-load chainstate directly into chainbase
+            // here — after genesis baseline, before revision is set / first block produced.
+            if let Some(path) = self
+                .node_config
+                .as_ref()
+                .and_then(|c| c.snapshot_path.clone())
+            {
+                info!("importing chainstate snapshot from {}", path);
+                let stats = crate::chain::snapshot_import::apply_snapshot_file(&mut self.db, &path)
+                    .map_err(|e| {
+                        ChainError::GenesisError(format!("snapshot import failed: {}", e))
+                    })?;
+                info!(
+                    "snapshot imported: {} tables, {} rows, {} idx64",
+                    stats.tables, stats.rows, stats.idx64
+                );
+            }
+
             self.db
                 .set_revision(self.last_accepted_block.block_num() as i64)?;
             info!("database initialized successfully");
