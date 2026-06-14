@@ -149,6 +149,31 @@ pub fn set_blockchain_parameters_packed(
     let u32_at = |o: usize| u32::from_le_bytes(src_bytes[o..o + 4].try_into().unwrap());
     let u16_at = |o: usize| u16::from_le_bytes(src_bytes[o..o + 2].try_into().unwrap());
 
+    // Fields 0..=11 (offsets 0..52, through max_transaction_lifetime) are identical in
+    // both layouts. The tail differs: PulseVM `chain_config` (64B) ends with
+    // max_inline_action_size, max_inline_action_depth, max_authority_depth,
+    // max_action_return_value_size; the Antelope CDT `blockchain_parameters` (68B) instead
+    // has deferred_trx_expiration_window + max_transaction_delay before max_inline_action_*
+    // and has NO max_action_return_value_size. Distinguish by length.
+    let (max_inline_action_size, max_inline_action_depth, max_authority_depth, max_action_return_value_size) =
+        if src_bytes.len() >= 68 {
+            // Antelope blockchain_parameters: skip deferred_trx_expiration_window (52..56)
+            // and max_transaction_delay (56..60). Preserve the current
+            // max_action_return_value_size since the blob doesn't carry it.
+            let current_marv = {
+                let db = env_data.db();
+                let gpo = unsafe {
+                    &*db.get_global_properties().map_err(|e| {
+                        RuntimeError::new(format!("set_blockchain_parameters_packed: {}", e))
+                    })?
+                };
+                gpo.get_chain_config().get_max_action_return_value_size()
+            };
+            (u32_at(60), u16_at(64), u16_at(66), current_marv)
+        } else {
+            (u32_at(52), u16_at(56), u16_at(58), u32_at(60))
+        };
+
     let mut db = env_data.db_mut();
     db.set_blockchain_config(
         u64_at(0),  // max_block_net_usage
@@ -163,10 +188,10 @@ pub fn set_blockchain_parameters_packed(
         u32_at(40), // max_transaction_cpu_usage
         u32_at(44), // min_transaction_cpu_usage
         u32_at(48), // max_transaction_lifetime
-        u32_at(52), // max_inline_action_size
-        u16_at(56), // max_inline_action_depth
-        u16_at(58), // max_authority_depth
-        u32_at(60), // max_action_return_value_size
+        max_inline_action_size,
+        max_inline_action_depth,
+        max_authority_depth,
+        max_action_return_value_size,
     )
     .map_err(|e| {
         RuntimeError::new(format!("set_blockchain_parameters_packed: {}", e))
