@@ -166,6 +166,13 @@ pub mod ffi {
         pub fn get_primary_key(self: &Index128Object) -> u64;
         pub fn get_payer(self: &Index128Object) -> &CxxName;
 
+        #[cxx_name = "index_double_object"]
+        type IndexDoubleObject;
+        pub fn get_table_id(self: &IndexDoubleObject) -> &TableId;
+        pub fn get_primary_key(self: &IndexDoubleObject) -> u64;
+        pub fn get_secondary_key(self: &IndexDoubleObject) -> f64;
+        pub fn get_payer(self: &IndexDoubleObject) -> &CxxName;
+
         // Methods on database
         pub fn flush(self: Pin<&mut Database>) -> Result<()>;
         pub fn undo(self: Pin<&mut Database>);
@@ -345,6 +352,13 @@ pub mod ffi {
             id: u64,
             secondary_key: U128,
         ) -> Result<&Index128Object>;
+        pub fn create_index_double_object(
+            self: Pin<&mut Database>,
+            table: &TableObject,
+            payer: u64,
+            id: u64,
+            secondary_key: f64,
+        ) -> Result<&IndexDoubleObject>;
         pub fn update_key_value_object(
             self: Pin<&mut Database>,
             obj: &KeyValueObject,
@@ -362,6 +376,12 @@ pub mod ffi {
             obj: &Index128Object,
             payer: u64,
             secondary_key: U128,
+        ) -> Result<()>;
+        pub fn update_index_double_object(
+            self: Pin<&mut Database>,
+            obj: &IndexDoubleObject,
+            payer: u64,
+            secondary_key: f64,
         ) -> Result<()>;
         pub fn remove_table(self: Pin<&mut Database>, table: &TableObject) -> Result<()>;
         pub fn is_account(self: &Database, account: u64) -> Result<bool>;
@@ -563,6 +583,69 @@ pub mod ffi {
             primary_key: &mut u64,
         ) -> Result<i32>;
 
+        // Index double methods
+        pub fn db_idx_double_remove(
+            self: Pin<&mut Database>,
+            keyval_cache: Pin<&mut CxxIndexDoubleIteratorCache>,
+            iterator: i32,
+            receiver: u64,
+        ) -> Result<()>;
+        pub fn db_idx_double_find_secondary(
+            self: Pin<&mut Database>,
+            keyval_cache: Pin<&mut CxxIndexDoubleIteratorCache>,
+            code: u64,
+            scope: u64,
+            table: u64,
+            secondary_key: f64,
+            primary_key: &mut u64,
+        ) -> Result<i32>;
+        pub fn db_idx_double_find_primary(
+            self: Pin<&mut Database>,
+            keyval_cache: Pin<&mut CxxIndexDoubleIteratorCache>,
+            code: u64,
+            scope: u64,
+            table: u64,
+            secondary_key: &mut f64,
+            primary_key: u64,
+        ) -> Result<i32>;
+        pub fn db_idx_double_lowerbound(
+            self: Pin<&mut Database>,
+            keyval_cache: Pin<&mut CxxIndexDoubleIteratorCache>,
+            code: u64,
+            scope: u64,
+            table: u64,
+            secondary_key: &mut f64,
+            primary_key: &mut u64,
+        ) -> Result<i32>;
+        pub fn db_idx_double_upperbound(
+            self: Pin<&mut Database>,
+            keyval_cache: Pin<&mut CxxIndexDoubleIteratorCache>,
+            code: u64,
+            scope: u64,
+            table: u64,
+            secondary_key: &mut f64,
+            primary_key: &mut u64,
+        ) -> Result<i32>;
+        pub fn db_idx_double_end(
+            self: Pin<&mut Database>,
+            keyval_cache: Pin<&mut CxxIndexDoubleIteratorCache>,
+            code: u64,
+            scope: u64,
+            table: u64,
+        ) -> Result<i32>;
+        pub fn db_idx_double_next(
+            self: Pin<&mut Database>,
+            keyval_cache: Pin<&mut CxxIndexDoubleIteratorCache>,
+            iterator: i32,
+            primary_key: &mut u64,
+        ) -> Result<i32>;
+        pub fn db_idx_double_previous(
+            self: Pin<&mut Database>,
+            keyval_cache: Pin<&mut CxxIndexDoubleIteratorCache>,
+            iterator: i32,
+            primary_key: &mut u64,
+        ) -> Result<i32>;
+
         pub fn remove_permission(
             self: Pin<&mut Database>,
             permission: &PermissionObject,
@@ -678,6 +761,28 @@ pub mod ffi {
         pub fn get(self: &CxxIndex128IteratorCache, iterator: i32) -> Result<&Index128Object>;
         pub fn remove(self: Pin<&mut CxxIndex128IteratorCache>, iterator: i32) -> Result<()>;
         pub fn add(self: Pin<&mut CxxIndex128IteratorCache>, obj: &Index128Object) -> Result<i32>;
+
+        pub type CxxIndexDoubleIteratorCache;
+        pub fn new_index_double_iterator_cache() -> UniquePtr<CxxIndexDoubleIteratorCache>;
+        pub fn cache_table(
+            self: Pin<&mut CxxIndexDoubleIteratorCache>,
+            table: &TableObject,
+        ) -> Result<i32>;
+        pub fn get_table(
+            self: &CxxIndexDoubleIteratorCache,
+            table_id: &TableId,
+        ) -> Result<&TableObject>;
+        pub fn get_end_iterator_by_table_id(
+            self: &CxxIndexDoubleIteratorCache,
+            table_id: &TableId,
+        ) -> Result<i32>;
+        pub fn find_table_by_end_iterator(
+            self: &CxxIndexDoubleIteratorCache,
+            ei: i32,
+        ) -> Result<*const TableObject>;
+        pub fn get(self: &CxxIndexDoubleIteratorCache, iterator: i32) -> Result<&IndexDoubleObject>;
+        pub fn remove(self: Pin<&mut CxxIndexDoubleIteratorCache>, iterator: i32) -> Result<()>;
+        pub fn add(self: Pin<&mut CxxIndexDoubleIteratorCache>, obj: &IndexDoubleObject) -> Result<i32>;
 
         pub type CxxBlockTimestamp;
         pub fn to_time_point(self: &CxxBlockTimestamp) -> SharedPtr<CxxTimePoint>;

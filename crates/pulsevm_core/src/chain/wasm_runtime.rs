@@ -25,7 +25,7 @@ use crate::{
         name::Name,
         transaction::Action,
         webassembly::{
-            __ashlti3, __ashrti3, __divti3, __floatuntidf, __lshlti3, __lshrti3, __modti3, __multi3, __udivti3, __umodti3, abort, assert_sha224, assert_sha256, assert_sha512, check_transaction_authorization, current_time, db_end_i64, db_find_i64, db_get_i64, db_idx64_end, db_idx64_find_primary, db_idx64_find_secondary, db_idx64_lowerbound, db_idx64_next, db_idx64_previous, db_idx64_remove, db_idx64_store, db_idx64_update, db_idx64_upperbound, db_idx128_end, db_idx128_find_primary, db_idx128_find_secondary, db_idx128_lowerbound, db_idx128_next, db_idx128_previous, db_idx128_remove, db_idx128_store, db_idx128_update, db_idx128_upperbound, db_lowerbound_i64, db_next_i64, db_previous_i64, db_remove_i64, db_store_i64, db_update_i64, db_upperbound_i64, eosio_assert, get_resource_limits, is_privileged, memcmp, memcpy, memmove, memset, printdf, printhex, printi, printi128, printn, prints, prints_l, printsf, printui, printui128, pulse_assert, pulse_assert_code, pulse_assert_message, pulse_exit, read_action_data, require_auth2, require_recipient, set_action_return_value, set_privileged, set_resource_limits, sha224, sha256, sha512
+            __ashlti3, __ashrti3, __divti3, __floatuntidf, __lshlti3, __lshrti3, __modti3, __multi3, __udivti3, __umodti3, abort, assert_recover_key, assert_ripemd160, assert_sha1, assert_sha224, assert_sha256, assert_sha512, check_permission_authorization, check_transaction_authorization, current_time, db_end_i64, db_find_i64, db_get_i64, db_idx64_end, db_idx64_find_primary, db_idx64_find_secondary, db_idx64_lowerbound, db_idx64_next, db_idx64_previous, db_idx64_remove, db_idx64_store, db_idx64_update, db_idx64_upperbound, db_idx128_end, db_idx128_find_primary, db_idx128_find_secondary, db_idx128_lowerbound, db_idx128_next, db_idx128_previous, db_idx128_remove, db_idx128_store, db_idx128_update, db_idx128_upperbound, db_idx_double_find_primary, db_idx_double_lowerbound, db_idx_double_next, db_idx_double_store, db_idx_double_update, db_lowerbound_i64, db_next_i64, db_previous_i64, db_remove_i64, db_store_i64, db_update_i64, db_upperbound_i64, cancel_deferred, eosio_assert, get_account_creation_time, get_active_producers, get_permission_last_used, get_resource_limits, is_privileged, memcmp, memcpy, memmove, memset, printdf, printhex, printi, printi128, printn, prints, prints_l, printsf, printui, printui128, pulse_assert, pulse_assert_code, pulse_assert_message, pulse_exit, read_action_data, recover_key, require_auth2, require_recipient, ripemd160, send_deferred, set_action_return_value, set_privileged, set_resource_limits, sha1, sha224, sha256, sha512
         },
     },
 };
@@ -283,6 +283,12 @@ impl WasmRuntime {
                 "db_idx128_end" => Function::new_typed_with_env(&mut store, &env, db_idx128_end),
                 "db_idx128_next" => Function::new_typed_with_env(&mut store, &env, db_idx128_next),
                 "db_idx128_previous" => Function::new_typed_with_env(&mut store, &env, db_idx128_previous),
+                // Index double (f64 secondary) functions
+                "db_idx_double_store" => Function::new_typed_with_env(&mut store, &env, db_idx_double_store),
+                "db_idx_double_update" => Function::new_typed_with_env(&mut store, &env, db_idx_double_update),
+                "db_idx_double_find_primary" => Function::new_typed_with_env(&mut store, &env, db_idx_double_find_primary),
+                "db_idx_double_lowerbound" => Function::new_typed_with_env(&mut store, &env, db_idx_double_lowerbound),
+                "db_idx_double_next" => Function::new_typed_with_env(&mut store, &env, db_idx_double_next),
                 // System functions
                 "pulse_assert" => Function::new_typed_with_env(&mut store, &env, pulse_assert),
                 "eosio_assert" => Function::new_typed_with_env(&mut store, &env, eosio_assert),
@@ -301,6 +307,12 @@ impl WasmRuntime {
                 "assert_sha224" => Function::new_typed_with_env(&mut store, &env, assert_sha224),
                 "assert_sha256" => Function::new_typed_with_env(&mut store, &env, assert_sha256),
                 "assert_sha512" => Function::new_typed_with_env(&mut store, &env, assert_sha512),
+                "sha1" => Function::new_typed_with_env(&mut store, &env, sha1),
+                "ripemd160" => Function::new_typed_with_env(&mut store, &env, ripemd160),
+                "assert_sha1" => Function::new_typed_with_env(&mut store, &env, assert_sha1),
+                "assert_ripemd160" => Function::new_typed_with_env(&mut store, &env, assert_ripemd160),
+                "recover_key" => Function::new_typed_with_env(&mut store, &env, recover_key),
+                "assert_recover_key" => Function::new_typed_with_env(&mut store, &env, assert_recover_key),
                 "is_privileged" => Function::new_typed_with_env(&mut store, &env, is_privileged),
                 "set_privileged" => Function::new_typed_with_env(&mut store, &env, set_privileged),
                 "set_resource_limits" => Function::new_typed_with_env(&mut store, &env, set_resource_limits),
@@ -312,6 +324,12 @@ impl WasmRuntime {
                 "preactivate_feature" => Function::new_typed_with_env(&mut store, &env, preactivate_feature),
                 "send_inline" => Function::new_typed_with_env(&mut store, &env, send_inline),
                 "check_transaction_authorization" => Function::new_typed_with_env(&mut store, &env, check_transaction_authorization),
+                "check_permission_authorization" => Function::new_typed_with_env(&mut store, &env, check_permission_authorization),
+                "get_active_producers" => Function::new_typed_with_env(&mut store, &env, get_active_producers),
+                "get_account_creation_time" => Function::new_typed_with_env(&mut store, &env, get_account_creation_time),
+                "get_permission_last_used" => Function::new_typed_with_env(&mut store, &env, get_permission_last_used),
+                "send_deferred" => Function::new_typed_with_env(&mut store, &env, send_deferred),
+                "cancel_deferred" => Function::new_typed_with_env(&mut store, &env, cancel_deferred),
                 // Console functions
                 "prints" => Function::new_typed_with_env(&mut store, &env, prints),
                 "prints_l" => Function::new_typed_with_env(&mut store, &env, prints_l),

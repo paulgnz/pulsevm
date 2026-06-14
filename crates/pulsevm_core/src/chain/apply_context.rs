@@ -9,7 +9,7 @@ use pulsevm_billable_size::billable_size_v;
 use pulsevm_crypto::Bytes;
 use pulsevm_error::ChainError;
 use pulsevm_ffi::{
-    AccountMetadataObject, Database, Index64IteratorCache, Index64Object, Index128IteratorCache, Index128Object, KeyValueIteratorCache, KeyValueObject, TableObject
+    AccountMetadataObject, Database, Index64IteratorCache, Index64Object, Index128IteratorCache, Index128Object, IndexDoubleIteratorCache, IndexDoubleObject, KeyValueIteratorCache, KeyValueObject, TableObject
 };
 
 use crate::{
@@ -39,6 +39,7 @@ struct ApplyContextInner {
     keyval_cache: KeyValueIteratorCache,    // Cache for key-value iterators
     index64_cache: Index64IteratorCache,    // Cache for index64 iterators
     index128_cache: Index128IteratorCache,    // Cache for index128 iterators
+    index_double_cache: IndexDoubleIteratorCache, // Cache for index_double iterators
     cpu_limit: i64,                         // CPU limit for the current action
 }
 
@@ -91,6 +92,7 @@ impl ApplyContext {
                 keyval_cache: KeyValueIteratorCache::new(),
                 index64_cache: Index64IteratorCache::new(),
                 index128_cache: Index128IteratorCache::new(),
+                index_double_cache: IndexDoubleIteratorCache::new(),
                 cpu_limit,
             })),
         })
@@ -876,6 +878,160 @@ impl ApplyContext {
         let mut inner = self.inner.write()?;
         self.db
             .db_idx128_previous(&mut inner.index128_cache, iterator, primary)
+    }
+
+    pub fn db_idx_double_store(
+        &mut self,
+        scope: u64,
+        table: u64,
+        payer: u64,
+        primary_key: u64,
+        secondary_key: f64,
+    ) -> Result<i32, ChainError> {
+        let table = self.find_or_create_table(*self.receiver, scope, table, payer)?;
+        let table = unsafe { &*table };
+        pulse_assert(
+            payer != 0,
+            ChainError::TransactionError(format!(
+                "must specify a valid account to pay for new record"
+            )),
+        )?;
+
+        let res = {
+            let mut inner = self.inner.write()?;
+            let obj =
+                self.db
+                    .create_index_double_object(table, payer, primary_key, secondary_key)?;
+            let obj = unsafe { &*obj };
+            inner.index_double_cache.cache_table(&table)?;
+            inner.index_double_cache.add(obj)?
+        };
+
+        let billable_size = billable_size_v::<IndexDoubleObject>() as i64;
+        self.update_db_usage(&payer.into(), billable_size)?;
+
+        Ok(res)
+    }
+
+    pub fn db_idx_double_update(
+        &mut self,
+        iterator: i32,
+        payer: &Name,
+        secondary: f64,
+    ) -> Result<(), ChainError> {
+        let payer = payer.as_u64();
+        let billing_size = billable_size_v::<IndexDoubleObject>() as i64;
+        let (old_payer, new_payer) = {
+            let inner = self.inner.read()?;
+            let obj = inner.index_double_cache.get(iterator)?;
+            let table_obj = inner.index_double_cache.get_table(obj.get_table_id())?;
+            pulse_assert(
+                table_obj.get_code().to_uint64_t() == self.receiver.as_u64(),
+                ChainError::TransactionError(format!("db access violation",)),
+            )?;
+            let old_payer = obj.get_payer().to_uint64_t();
+            let new_payer = if payer == 0 {
+                obj.get_payer().to_uint64_t()
+            } else {
+                payer
+            };
+            self.db
+                .update_index_double_object(obj, new_payer, secondary)?;
+            (old_payer, new_payer)
+        };
+
+        if old_payer != new_payer {
+            self.update_db_usage(&Name::new(old_payer), -billing_size)?;
+            self.update_db_usage(&Name::new(new_payer), billing_size)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn db_idx_double_remove(&mut self, iterator: i32) -> Result<(), ChainError> {
+        {
+            let mut inner = self.inner.write()?;
+            self.db.db_idx_double_remove(&mut inner.index_double_cache, iterator, self.receiver.as_u64())?;
+        }
+
+        self.update_db_usage(&Name::new(self.receiver.as_u64()), -(billable_size_v::<IndexDoubleObject>() as i64))?;
+
+        Ok(())
+    }
+
+    pub fn db_idx_double_find_secondary(
+        &mut self,
+        code: u64,
+        scope: u64,
+        table: u64,
+        secondary: f64,
+        primary: &mut u64,
+    ) -> Result<i32, ChainError> {
+        let mut inner = self.inner.write()?;
+        self.db
+            .db_idx_double_find_secondary(&mut inner.index_double_cache, code, scope, table, secondary, primary)
+    }
+
+    pub fn db_idx_double_find_primary(
+        &mut self,
+         code: u64,
+         scope: u64,
+         table: u64,
+         secondary: &mut f64,
+         primary: u64,
+    ) -> Result<i32, ChainError> {
+        let mut inner = self.inner.write()?;
+        self.db
+            .db_idx_double_find_primary(&mut inner.index_double_cache, code, scope, table, secondary, primary)
+    }
+
+    pub fn db_idx_double_lowerbound(
+        &mut self,
+        code: u64,
+        scope: u64,
+        table: u64,
+        secondary: &mut f64,
+        primary: &mut u64,
+    ) -> Result<i32, ChainError> {
+        let mut inner = self.inner.write()?;
+        self.db
+            .db_idx_double_lowerbound(&mut inner.index_double_cache, code, scope, table, secondary, primary)
+    }
+
+    pub fn db_idx_double_upperbound(
+        &mut self,
+        code: u64,
+        scope: u64,
+        table: u64,
+        secondary: &mut f64,
+        primary: &mut u64,
+    ) -> Result<i32, ChainError> {
+        let mut inner = self.inner.write()?;
+        self.db
+            .db_idx_double_upperbound(&mut inner.index_double_cache, code, scope, table, secondary, primary)
+    }
+
+    pub fn db_idx_double_end(
+        &mut self,
+        code: u64,
+        scope: u64,
+        table: u64,
+    ) -> Result<i32, ChainError> {
+        let mut inner = self.inner.write()?;
+        self.db
+            .db_idx_double_end(&mut inner.index_double_cache, code, scope, table)
+    }
+
+    pub fn db_idx_double_next(&mut self, iterator: i32, primary: &mut u64) -> Result<i32, ChainError> {
+        let mut inner = self.inner.write()?;
+        self.db
+            .db_idx_double_next(&mut inner.index_double_cache, iterator, primary)
+    }
+
+    pub fn db_idx_double_previous(&mut self, iterator: i32, primary: &mut u64) -> Result<i32, ChainError> {
+        let mut inner = self.inner.write()?;
+        self.db
+            .db_idx_double_previous(&mut inner.index_double_cache, iterator, primary)
     }
 
     pub fn find_table(

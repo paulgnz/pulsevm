@@ -143,6 +143,12 @@ namespace pulsevm { namespace chain {
    typedef secondary_index<key256_t,index256_object_type>::index_object index256_object;
    typedef secondary_index<key256_t,index256_object_type>::index_index  index256_index;
 
+   // Secondary index keyed by an 8-byte IEEE-754 double. PulseVM uses native `double`
+   // ordering (std::less<double>) rather than softfloat float64_t; ordering is still
+   // deterministic for the WASM LLVM backend (canonicalize_nans is enabled).
+   typedef secondary_index<double,index_double_object_type>::index_object index_double_object;
+   typedef secondary_index<double,index_double_object_type>::index_index  index_double_index;
+
    template<typename T>
    struct secondary_key_traits {
       using value_type = std::enable_if_t<std::is_integral<T>::value, T>;
@@ -193,6 +199,7 @@ namespace pulsevm { namespace chain {
    DECLARE_TABLE_ID_TAG(index64_object, by_primary)
    DECLARE_TABLE_ID_TAG(index128_object, by_primary)
    DECLARE_TABLE_ID_TAG(index256_object, by_primary)
+   DECLARE_TABLE_ID_TAG(index_double_object, by_primary)
 
    template<typename T>
    using object_to_table_id_tag_t = typename object_to_table_id_tag<T>::tag_type;
@@ -228,6 +235,12 @@ namespace config {
       static const uint64_t value = 24 + 32 + overhead; ///< 24 bytes for fixed fields + 32 bytes key + overhead
    };
 
+   template<>
+   struct billable_size<index_double_object> {
+      static const uint64_t overhead = overhead_per_row_per_index_ram_bytes * 3;  ///< overhead for potentially single-row table, 3x indices internal-key, primary key and primary+secondary key
+      static const uint64_t value = 24 + 8 + overhead; ///< 24 bytes for fixed fields + 8 bytes key + overhead
+   };
+
 } // namespace config
 
 } }  // namespace pulsevm::chain
@@ -238,6 +251,7 @@ CHAINBASE_SET_INDEX_TYPE(pulsevm::chain::key_value_object, pulsevm::chain::key_v
 CHAINBASE_SET_INDEX_TYPE(pulsevm::chain::index64_object, pulsevm::chain::index64_index)
 CHAINBASE_SET_INDEX_TYPE(pulsevm::chain::index128_object, pulsevm::chain::index128_index)
 CHAINBASE_SET_INDEX_TYPE(pulsevm::chain::index256_object, pulsevm::chain::index256_index)
+CHAINBASE_SET_INDEX_TYPE(pulsevm::chain::index_double_object, pulsevm::chain::index_double_index)
 
 FC_REFLECT(pulsevm::chain::table_id_object, (code)(scope)(table)(payer)(count) )
 FC_REFLECT(pulsevm::chain::key_value_object, (primary_key)(payer)(value) )
@@ -248,3 +262,4 @@ FC_REFLECT(pulsevm::chain::key_value_object, (primary_key)(payer)(value) )
 REFLECT_SECONDARY(pulsevm::chain::index64_object)
 REFLECT_SECONDARY(pulsevm::chain::index128_object)
 REFLECT_SECONDARY(pulsevm::chain::index256_object)
+REFLECT_SECONDARY(pulsevm::chain::index_double_object)

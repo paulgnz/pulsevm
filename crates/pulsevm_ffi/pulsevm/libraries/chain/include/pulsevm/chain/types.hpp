@@ -162,6 +162,7 @@ namespace pulsevm::chain {
       code_object_type,
       database_header_object_type,
       transaction_object_type,
+      index_double_object_type, ///< appended at the end to avoid shifting shared-memory offsets
       OBJECT_TYPE_COUNT ///< Sentry value which contains the number of different object types
    };
 
