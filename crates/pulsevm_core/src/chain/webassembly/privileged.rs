@@ -1,10 +1,69 @@
+use std::sync::atomic::{AtomicI64, Ordering};
+
 use pulsevm_error::ChainError;
+use pulsevm_name::Name;
+use spdlog::info;
 use wasmer::{FunctionEnvMut, RuntimeError, WasmPtr};
 
 use crate::chain::{
     apply_context::ApplyContext, resource_limits::ResourceLimitsManager, utils::pulse_assert,
     wasm_runtime::WasmContext,
 };
+
+/// Phase-0 DPoS-on-Avalanche: monotonic version for the recorded proposed (vote-elected)
+/// producer schedule. In-memory (resets on restart) — enough to surface the elected set;
+/// persistent storage + the ACP-77 validator-manager bridge are Phase 1/2.
+static PROPOSED_SCHEDULE_VERSION: AtomicI64 = AtomicI64::new(0);
+
+/// Lenient decode of a packed `vector<producer_authority>` → producer names. Each entry is
+/// name(u64) + block_signing_authority{ variant_idx(varuint), threshold(u32),
+/// keys: vector<key_weight{ public_key, weight(u16) }> }. K1/R1 keys are 1+33 bytes; on any
+/// unexpected shape we stop and return what we have (good enough to surface the elected set).
+fn decode_producer_names(bytes: &[u8]) -> Vec<String> {
+    let mut pos = 0usize;
+    fn varuint(b: &[u8], p: &mut usize) -> u64 {
+        let (mut r, mut s) = (0u64, 0u32);
+        while *p < b.len() {
+            let x = b[*p];
+            *p += 1;
+            r |= ((x & 0x7f) as u64) << s;
+            if x & 0x80 == 0 {
+                break;
+            }
+            s += 7;
+        }
+        r
+    }
+    let count = varuint(bytes, &mut pos);
+    let mut names = Vec::new();
+    for _ in 0..count {
+        if pos + 8 > bytes.len() {
+            break;
+        }
+        let name_u64 = u64::from_le_bytes(bytes[pos..pos + 8].try_into().unwrap());
+        pos += 8;
+        names.push(Name::from(name_u64).to_string());
+        let _variant = varuint(bytes, &mut pos);
+        if pos + 4 > bytes.len() {
+            break;
+        }
+        pos += 4; // threshold
+        let key_count = varuint(bytes, &mut pos);
+        for _ in 0..key_count {
+            if pos >= bytes.len() {
+                break;
+            }
+            let key_type = bytes[pos];
+            pos += 1;
+            match key_type {
+                0 | 1 => pos += 33, // K1 / R1
+                _ => return names,  // WA/unknown — stop early
+            }
+            pos += 2; // weight
+        }
+    }
+    names
+}
 
 fn privileged_check(context: &ApplyContext) -> Result<(), RuntimeError> {
     if !context.is_privileged()? {
@@ -252,28 +311,67 @@ pub fn get_blockchain_parameters_packed(
     Ok(size)
 }
 
+/// Phase-0 DPoS-on-Avalanche: read the packed schedule out of wasm memory, decode the
+/// vote-elected producer names, log them, and return a monotonic version. This is the set
+/// that the future ACP-77 validator-manager bridge would seat as Avalanche validators
+/// (Phase 1/2). Today it surfaces the elected set instead of dropping it.
+fn record_proposed_producers(
+    env_data: &WasmContext,
+    store: &impl wasmer::AsStoreRef,
+    packed_ptr: WasmPtr<u8>,
+    packed_len: u32,
+) -> Result<i64, RuntimeError> {
+    let bytes = {
+        let memory = env_data
+            .memory()
+            .as_ref()
+            .expect("Wasm memory not initialized");
+        let view = memory.view(store);
+        let slice = packed_ptr.slice(&view, packed_len)?;
+        let mut b = vec![0u8; packed_len as usize];
+        slice.read_slice(&mut b)?;
+        b
+    };
+    let names = decode_producer_names(&bytes);
+    let version = PROPOSED_SCHEDULE_VERSION.fetch_add(1, Ordering::SeqCst) + 1;
+    info!(
+        "[DPoS] set_proposed_producers v{}: {} vote-elected producers: [{}]",
+        version,
+        names.len(),
+        names.join(", ")
+    );
+    Ok(version)
+}
+
 pub fn set_proposed_producers(
     mut env: FunctionEnvMut<WasmContext>,
-    _packed_producer_schedule_ptr: WasmPtr<u8>,
-    _packed_producer_schedule_len: u32,
+    packed_producer_schedule_ptr: WasmPtr<u8>,
+    packed_producer_schedule_len: u32,
 ) -> Result<i64, RuntimeError> {
-    privileged_check(env.data_mut().apply_context_mut())?;
-    // PulseVM runs as a single-producer Avalanche subnet (the `pulse` node is the sole
-    // producer); there is no on-chain proposed-producer schedule object to mutate. Accept
-    // the call so eosio.system regproducer/voteproducer/claimrewards flows execute, and
-    // report "schedule unchanged" via -1 (Antelope's contract for a no-op proposal).
-    Ok(-1)
+    let (env_data, store) = env.data_and_store_mut();
+    privileged_check(env_data.apply_context_mut())?;
+    record_proposed_producers(
+        env_data,
+        &store,
+        packed_producer_schedule_ptr,
+        packed_producer_schedule_len,
+    )
 }
 
 pub fn set_proposed_producers_ex(
     mut env: FunctionEnvMut<WasmContext>,
     _producer_data_format: u64,
-    _packed_producer_schedule_ptr: WasmPtr<u8>,
-    _packed_producer_schedule_len: u32,
+    packed_producer_schedule_ptr: WasmPtr<u8>,
+    packed_producer_schedule_len: u32,
 ) -> Result<i64, RuntimeError> {
-    privileged_check(env.data_mut().apply_context_mut())?;
-    // See set_proposed_producers: single-producer subnet, no schedule object to update.
-    Ok(-1)
+    let (env_data, store) = env.data_and_store_mut();
+    privileged_check(env_data.apply_context_mut())?;
+    record_proposed_producers(
+        env_data,
+        &store,
+        packed_producer_schedule_ptr,
+        packed_producer_schedule_len,
+    )
 }
 
 pub fn preactivate_feature(
