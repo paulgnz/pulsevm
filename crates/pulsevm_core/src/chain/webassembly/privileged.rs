@@ -266,7 +266,15 @@ pub fn get_blockchain_parameters_packed(
     let (env_data, store) = env.data_and_store_mut();
     privileged_check(env_data.apply_context_mut())?;
 
-    // Serialize the current chain_config into the same 64-byte fixed LE layout.
+    // Emit the Antelope CDT `blockchain_parameters` layout (17 fixed LE fields = 68 bytes):
+    // it has deferred_trx_expiration_window + max_transaction_delay after max_transaction_lifetime
+    // and (unlike PulseVM's chain_config) NO max_action_return_value_size. The C++ eosio.system's
+    // get_default_parameters()/get_blockchain_parameters() unpacks exactly these 17 fields — if we
+    // emit chain_config's 16-field/64-byte layout instead, the contract over-reads by 4 bytes and
+    // every action fails ("datastream read past the end") on a fresh chain (empty _global).
+    // PulseVM has no deferred_trx_expiration_window/max_transaction_delay, so emit sane defaults.
+    const DEFERRED_TRX_EXPIRATION_WINDOW: u32 = 600; // 10 min
+    const MAX_TRANSACTION_DELAY: u32 = 3_888_000; // 45 days
     let buf = {
         let db = env_data.db();
         let gpo = unsafe {
@@ -275,7 +283,7 @@ pub fn get_blockchain_parameters_packed(
             })?
         };
         let cfg = gpo.get_chain_config();
-        let mut b: Vec<u8> = Vec::with_capacity(CHAIN_CONFIG_PACKED_LEN);
+        let mut b: Vec<u8> = Vec::with_capacity(68);
         b.extend_from_slice(&cfg.get_max_block_net_usage().to_le_bytes());
         b.extend_from_slice(&cfg.get_target_block_net_usage_pct().to_le_bytes());
         b.extend_from_slice(&cfg.get_max_transaction_net_usage().to_le_bytes());
@@ -288,10 +296,11 @@ pub fn get_blockchain_parameters_packed(
         b.extend_from_slice(&cfg.get_max_transaction_cpu_usage().to_le_bytes());
         b.extend_from_slice(&cfg.get_min_transaction_cpu_usage().to_le_bytes());
         b.extend_from_slice(&cfg.get_max_transaction_lifetime().to_le_bytes());
+        b.extend_from_slice(&DEFERRED_TRX_EXPIRATION_WINDOW.to_le_bytes());
+        b.extend_from_slice(&MAX_TRANSACTION_DELAY.to_le_bytes());
         b.extend_from_slice(&cfg.get_max_inline_action_size().to_le_bytes());
         b.extend_from_slice(&cfg.get_max_inline_action_depth().to_le_bytes());
         b.extend_from_slice(&cfg.get_max_authority_depth().to_le_bytes());
-        b.extend_from_slice(&cfg.get_max_action_return_value_size().to_le_bytes());
         b
     };
 
