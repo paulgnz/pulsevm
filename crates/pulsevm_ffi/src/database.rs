@@ -158,6 +158,50 @@ impl Database {
             .map_err(|e| ChainError::InternalError(format!("{}", e)))
     }
 
+    pub fn set_blockchain_config(
+        &mut self,
+        max_block_net_usage: u64,
+        target_block_net_usage_pct: u32,
+        max_transaction_net_usage: u32,
+        base_per_transaction_net_usage: u32,
+        net_usage_leeway: u32,
+        context_free_discount_net_usage_num: u32,
+        context_free_discount_net_usage_den: u32,
+        max_block_cpu_usage: u32,
+        target_block_cpu_usage_pct: u32,
+        max_transaction_cpu_usage: u32,
+        min_transaction_cpu_usage: u32,
+        max_transaction_lifetime: u32,
+        max_inline_action_size: u32,
+        max_inline_action_depth: u16,
+        max_authority_depth: u16,
+        max_action_return_value_size: u32,
+    ) -> Result<(), ChainError> {
+        let mut guard = self.inner.write()?;
+        let pinned = guard.pin_mut();
+
+        pinned
+            .set_blockchain_config(
+                max_block_net_usage,
+                target_block_net_usage_pct,
+                max_transaction_net_usage,
+                base_per_transaction_net_usage,
+                net_usage_leeway,
+                context_free_discount_net_usage_num,
+                context_free_discount_net_usage_den,
+                max_block_cpu_usage,
+                target_block_cpu_usage_pct,
+                max_transaction_cpu_usage,
+                min_transaction_cpu_usage,
+                max_transaction_lifetime,
+                max_inline_action_size,
+                max_inline_action_depth,
+                max_authority_depth,
+                max_action_return_value_size,
+            )
+            .map_err(|e| ChainError::InternalError(format!("{}", e)))
+    }
+
     pub fn get_account_metadata(
         &self,
         account_name: u64,
