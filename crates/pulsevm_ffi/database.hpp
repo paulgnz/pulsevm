@@ -43,6 +43,7 @@ public:
         this->add_index<index64_index>();
         this->add_index<index128_index>();
         this->add_index<index256_index>();
+        this->add_index<index_double_index>();
         this->add_index<global_property_multi_index>();
         this->add_index<dynamic_global_property_multi_index>();
         this->add_index<table_id_multi_index>();
@@ -1188,6 +1189,17 @@ public:
     int db_idx128_end( iterator_cache<index128_object>& keyval_cache, uint64_t code, uint64_t scope, uint64_t table );
     int db_idx128_next( iterator_cache<index128_object>& keyval_cache, int iterator, uint64_t& primary );
     int db_idx128_previous( iterator_cache<index128_object>& keyval_cache, int iterator, uint64_t& primary );
+
+    const index_double_object& create_index_double_object( const table_id_object& tab, uint64_t payer, uint64_t id, double secondary );
+    void update_index_double_object( const index_double_object& obj, uint64_t payer, double secondary );
+    void db_idx_double_remove( iterator_cache<index_double_object>& keyval_cache, int iterator, u_int64_t receiver );
+    int db_idx_double_find_secondary( iterator_cache<index_double_object>& keyval_cache, uint64_t code, uint64_t scope, uint64_t table, double secondary, uint64_t& primary );
+    int db_idx_double_find_primary( iterator_cache<index_double_object>& keyval_cache, uint64_t code, uint64_t scope, uint64_t table, double& secondary, uint64_t primary );
+    int db_idx_double_lowerbound( iterator_cache<index_double_object>& keyval_cache, uint64_t code, uint64_t scope, uint64_t table, double& secondary, uint64_t& primary );
+    int db_idx_double_upperbound( iterator_cache<index_double_object>& keyval_cache, uint64_t code, uint64_t scope, uint64_t table, double& secondary, uint64_t& primary );
+    int db_idx_double_end( iterator_cache<index_double_object>& keyval_cache, uint64_t code, uint64_t scope, uint64_t table );
+    int db_idx_double_next( iterator_cache<index_double_object>& keyval_cache, int iterator, uint64_t& primary );
+    int db_idx_double_previous( iterator_cache<index_double_object>& keyval_cache, int iterator, uint64_t& primary );
 
     uint64_t get_virtual_block_cpu_limit() const {
         const auto& state = this->get<resource_limits::resource_limits_state_object>();
