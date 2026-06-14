@@ -33,6 +33,11 @@ use crate::{
 use super::webassembly::{
     action_data_size, current_receiver, has_auth, is_account, require_auth, send_inline,
 };
+// Privileged governance/protocol intrinsics (used by the full Antelope eosio.system).
+use super::webassembly::{
+    get_blockchain_parameters_packed, preactivate_feature, set_blockchain_parameters_packed,
+    set_proposed_producers, set_proposed_producers_ex,
+};
 
 pub struct WasmContext {
     receiver: u64,
@@ -300,6 +305,11 @@ impl WasmRuntime {
                 "set_privileged" => Function::new_typed_with_env(&mut store, &env, set_privileged),
                 "set_resource_limits" => Function::new_typed_with_env(&mut store, &env, set_resource_limits),
                 "get_resource_limits" => Function::new_typed_with_env(&mut store, &env, get_resource_limits),
+                "set_blockchain_parameters_packed" => Function::new_typed_with_env(&mut store, &env, set_blockchain_parameters_packed),
+                "get_blockchain_parameters_packed" => Function::new_typed_with_env(&mut store, &env, get_blockchain_parameters_packed),
+                "set_proposed_producers" => Function::new_typed_with_env(&mut store, &env, set_proposed_producers),
+                "set_proposed_producers_ex" => Function::new_typed_with_env(&mut store, &env, set_proposed_producers_ex),
+                "preactivate_feature" => Function::new_typed_with_env(&mut store, &env, preactivate_feature),
                 "send_inline" => Function::new_typed_with_env(&mut store, &env, send_inline),
                 "check_transaction_authorization" => Function::new_typed_with_env(&mut store, &env, check_transaction_authorization),
                 // Console functions
