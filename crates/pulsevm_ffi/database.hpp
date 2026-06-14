@@ -177,6 +177,48 @@ public:
         });
     }
 
+    // Overwrite the global chain_config (backs the privileged
+    // set_blockchain_parameters_packed intrinsic / eosio.system setparams).
+    void set_blockchain_config(
+        uint64_t max_block_net_usage,
+        uint32_t target_block_net_usage_pct,
+        uint32_t max_transaction_net_usage,
+        uint32_t base_per_transaction_net_usage,
+        uint32_t net_usage_leeway,
+        uint32_t context_free_discount_net_usage_num,
+        uint32_t context_free_discount_net_usage_den,
+        uint32_t max_block_cpu_usage,
+        uint32_t target_block_cpu_usage_pct,
+        uint32_t max_transaction_cpu_usage,
+        uint32_t min_transaction_cpu_usage,
+        uint32_t max_transaction_lifetime,
+        uint32_t max_inline_action_size,
+        uint16_t max_inline_action_depth,
+        uint16_t max_authority_depth,
+        uint32_t max_action_return_value_size
+    ) {
+        const auto& gpo = this->get<global_property_object>();
+        this->modify( gpo, [&]( auto& g ){
+            auto& c = g.configuration;
+            c.max_block_net_usage                 = max_block_net_usage;
+            c.target_block_net_usage_pct          = target_block_net_usage_pct;
+            c.max_transaction_net_usage           = max_transaction_net_usage;
+            c.base_per_transaction_net_usage      = base_per_transaction_net_usage;
+            c.net_usage_leeway                    = net_usage_leeway;
+            c.context_free_discount_net_usage_num = context_free_discount_net_usage_num;
+            c.context_free_discount_net_usage_den = context_free_discount_net_usage_den;
+            c.max_block_cpu_usage                 = max_block_cpu_usage;
+            c.target_block_cpu_usage_pct          = target_block_cpu_usage_pct;
+            c.max_transaction_cpu_usage           = max_transaction_cpu_usage;
+            c.min_transaction_cpu_usage           = min_transaction_cpu_usage;
+            c.max_transaction_lifetime            = max_transaction_lifetime;
+            c.max_inline_action_size              = max_inline_action_size;
+            c.max_inline_action_depth             = max_inline_action_depth;
+            c.max_authority_depth                 = max_authority_depth;
+            c.max_action_return_value_size        = max_action_return_value_size;
+        });
+    }
+
     void initialize_resource_limits() {
         const auto& config = this->create<resource_limits::resource_limits_config_object>([](resource_limits::resource_limits_config_object& config){
             // see default settings in the declaration

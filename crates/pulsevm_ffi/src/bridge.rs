@@ -201,6 +201,25 @@ pub mod ffi {
             account: u64,
             is_privileged: bool,
         ) -> Result<()>;
+        pub fn set_blockchain_config(
+            self: Pin<&mut Database>,
+            max_block_net_usage: u64,
+            target_block_net_usage_pct: u32,
+            max_transaction_net_usage: u32,
+            base_per_transaction_net_usage: u32,
+            net_usage_leeway: u32,
+            context_free_discount_net_usage_num: u32,
+            context_free_discount_net_usage_den: u32,
+            max_block_cpu_usage: u32,
+            target_block_cpu_usage_pct: u32,
+            max_transaction_cpu_usage: u32,
+            min_transaction_cpu_usage: u32,
+            max_transaction_lifetime: u32,
+            max_inline_action_size: u32,
+            max_inline_action_depth: u16,
+            max_authority_depth: u16,
+            max_action_return_value_size: u32,
+        ) -> Result<()>;
         pub fn unlink_account_code(
             self: Pin<&mut Database>,
             old_code_entry: &CodeObject,
