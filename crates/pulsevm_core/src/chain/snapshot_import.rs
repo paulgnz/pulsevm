@@ -122,6 +122,9 @@ pub fn apply_snapshot(db: &mut Database, snap: &Snapshot) -> Result<ImportStats,
         }
         let aptr = db.create_account(acct, a.creation_date)?;
         let mptr = db.create_account_metadata(acct, a.privileged)?;
+        // Every account needs its resource_limits/usage rows (genesis does this in
+        // create_native_account) before set_account_limits can modify them.
+        db.initialize_account_resource_limits(acct)?;
         if let Some(abi_hex) = &a.abi_hex {
             let abi = hex::decode(abi_hex)
                 .map_err(|e| ChainError::ParseError(format!("account {} abi_hex: {}", a.name, e)))?;
@@ -139,6 +142,10 @@ pub fn apply_snapshot(db: &mut Database, snap: &Snapshot) -> Result<ImportStats,
             )?;
         }
         stats.accounts += 1;
+    }
+    // flush any pending resource-limit updates so totals/state are consistent
+    if stats.accounts > 0 {
+        db.process_account_limit_updates()?;
     }
 
     for t in &snap.tables {
