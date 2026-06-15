@@ -13,13 +13,33 @@ use serde::Deserialize;
 use std::str::FromStr;
 
 use pulsevm_error::ChainError;
-use pulsevm_ffi::{Database, TableObject};
+use pulsevm_ffi::{AccountMetadataObject, AccountObject, Database, TableObject};
 use pulsevm_name::Name;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct Snapshot {
     #[serde(default)]
+    pub accounts: Vec<AccountDump>,
+    #[serde(default)]
     pub tables: Vec<TableDump>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AccountDump {
+    pub name: String,
+    #[serde(default)]
+    pub creation_date: u32,
+    #[serde(default)]
+    pub privileged: bool,
+    /// packed ABI bytes (hex), optional — needed for table reads to decode to JSON.
+    #[serde(default)]
+    pub abi_hex: Option<String>,
+    #[serde(default)]
+    pub ram: Option<i64>,
+    #[serde(default)]
+    pub net: Option<i64>,
+    #[serde(default)]
+    pub cpu: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,6 +73,7 @@ pub struct Idx64 {
 
 #[derive(Debug, Default)]
 pub struct ImportStats {
+    pub accounts: u64,
     pub tables: u64,
     pub rows: u64,
     pub idx64: u64,
@@ -90,6 +111,36 @@ pub fn apply_snapshot_file(db: &mut Database, path: &str) -> Result<ImportStats,
 
 pub fn apply_snapshot(db: &mut Database, snap: &Snapshot) -> Result<ImportStats, ChainError> {
     let mut stats = ImportStats::default();
+
+    // Accounts first — the contract account must exist before its tables can be served (the
+    // table-read RPCs look up the code account's ABI). create_account/_metadata are the same
+    // privileged primitives genesis uses.
+    for a in &snap.accounts {
+        let acct = name(&a.name)?;
+        if !db.find_account(acct)?.is_null() {
+            continue; // already exists (e.g. a genesis account)
+        }
+        let aptr = db.create_account(acct, a.creation_date)?;
+        let mptr = db.create_account_metadata(acct, a.privileged)?;
+        if let Some(abi_hex) = &a.abi_hex {
+            let abi = hex::decode(abi_hex)
+                .map_err(|e| ChainError::ParseError(format!("account {} abi_hex: {}", a.name, e)))?;
+            // SAFETY: chainbase objects are stable in mmap; refs valid across the call.
+            let aref: &AccountObject = unsafe { &*aptr };
+            let mref: &AccountMetadataObject = unsafe { &*mptr };
+            db.update_account_abi(aref, mref, &abi)?;
+        }
+        if a.ram.is_some() || a.net.is_some() || a.cpu.is_some() {
+            db.set_account_limits(
+                acct,
+                a.ram.unwrap_or(-1),
+                a.net.unwrap_or(-1),
+                a.cpu.unwrap_or(-1),
+            )?;
+        }
+        stats.accounts += 1;
+    }
+
     for t in &snap.tables {
         let code = name(&t.code)?;
         let scope = name(&t.scope)?;
