@@ -37,6 +37,9 @@ use pulsevm_name_macro::name;
 pub use wat::parse_str as wat2wasm;
 
 pub const PULSE_NAME: Name = Name::new(name!("pulse"));
+// The 1:1 XPR-network migration uses `eosio` as the system account, so native system
+// actions (updateauth/newaccount/setcode/...) must be recognized on `eosio` too.
+pub const EOSIO_NAME: Name = Name::new(name!("eosio"));
 pub const OWNER_NAME: Name = Name::new(name!("owner"));
 pub const ACTIVE_NAME: Name = Name::new(name!("active"));
 pub const ANY_NAME: Name = Name::new(name!("pulse.any"));
