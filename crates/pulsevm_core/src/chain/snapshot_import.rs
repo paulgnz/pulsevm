@@ -15,7 +15,7 @@ use std::str::FromStr;
 
 use pulsevm_error::ChainError;
 use pulsevm_ffi::{
-    AccountMetadataObject, AccountObject, Authority, CxxTimePoint, Database, KeyWeight,
+    AccountMetadataObject, AccountObject, Authority, CxxDigest, CxxTimePoint, Database, KeyWeight,
     PermissionLevel, PermissionLevelWeight, TableObject, WaitWeight, parse_public_key,
 };
 use pulsevm_name::Name;
@@ -38,6 +38,9 @@ pub struct AccountDump {
     /// packed ABI bytes (hex), optional — needed for table reads to decode to JSON.
     #[serde(default)]
     pub abi_hex: Option<String>,
+    /// contract wasm (hex), optional — so the contract EXECUTES on Pulse (transfers, dapp actions).
+    #[serde(default)]
+    pub code_hex: Option<String>,
     #[serde(default)]
     pub ram: Option<i64>,
     #[serde(default)]
@@ -128,6 +131,7 @@ pub struct Idx64 {
 pub struct ImportStats {
     pub accounts: u64,
     pub permissions: u64,
+    pub code: u64,
     pub tables: u64,
     pub rows: u64,
     pub idx64: u64,
@@ -241,12 +245,32 @@ pub fn apply_snapshot(db: &mut Database, snap: &Snapshot) -> Result<ImportStats,
         // Every account needs its resource_limits/usage rows (genesis does this in
         // create_native_account) before set_account_limits can modify them.
         db.initialize_account_resource_limits(acct)?;
+        // SAFETY: chainbase objects live in stable mmap; refs valid across subsequent calls.
+        let aref: &AccountObject = unsafe { &*aptr };
+        let mref: &AccountMetadataObject = unsafe { &*mptr };
+        let t = CxxTimePoint::new((a.creation_date as i64) * 1_000_000);
+        let tref: &CxxTimePoint = t.as_ref().expect("CxxTimePoint::new non-null");
+        // contract code (wasm) — so the contract executes on Pulse (mirrors setcode)
+        if let Some(code_hex) = &a.code_hex {
+            let code = hex::decode(code_hex)
+                .map_err(|e| ChainError::ParseError(format!("account {} code_hex: {}", a.name, e)))?;
+            if !code.is_empty() {
+                let code_hash = CxxDigest::hash(&code)?;
+                db.update_account_code(
+                    mref,
+                    &code,
+                    0,
+                    tref,
+                    code_hash.as_ref().expect("code hash"),
+                    0,
+                    0,
+                )?;
+                stats.code += 1;
+            }
+        }
         if let Some(abi_hex) = &a.abi_hex {
             let abi = hex::decode(abi_hex)
                 .map_err(|e| ChainError::ParseError(format!("account {} abi_hex: {}", a.name, e)))?;
-            // SAFETY: chainbase objects are stable in mmap; refs valid across the call.
-            let aref: &AccountObject = unsafe { &*aptr };
-            let mref: &AccountMetadataObject = unsafe { &*mptr };
             db.update_account_abi(aref, mref, &abi)?;
         }
         if a.ram.is_some() || a.net.is_some() || a.cpu.is_some() {
@@ -260,8 +284,6 @@ pub fn apply_snapshot(db: &mut Database, snap: &Snapshot) -> Result<ImportStats,
         // Permissions (owner/active/custom) — so the account's real keys carry over and the
         // user can log in + sign on Pulse exactly as on XPR. Created parent-before-child.
         if !a.permissions.is_empty() {
-            let t = CxxTimePoint::new((a.creation_date as i64) * 1_000_000);
-            let tref: &CxxTimePoint = t.as_ref().expect("CxxTimePoint::new non-null");
             let mut ids: HashMap<&str, u64> = HashMap::new();
             for p in order_perms(&a.permissions) {
                 let parent_id = if p.parent.is_empty() {
