@@ -25,7 +25,8 @@ use crate::{
         name::Name,
         transaction::Action,
         webassembly::{
-            __ashlti3, __ashrti3, __divti3, __floatuntidf, __lshlti3, __lshrti3, __modti3, __multi3, __udivti3, __umodti3, abort, assert_recover_key, assert_ripemd160, assert_sha1, assert_sha224, assert_sha256, assert_sha512, check_permission_authorization, check_transaction_authorization, current_time, db_end_i64, db_find_i64, db_get_i64, db_idx64_end, db_idx64_find_primary, db_idx64_find_secondary, db_idx64_lowerbound, db_idx64_next, db_idx64_previous, db_idx64_remove, db_idx64_store, db_idx64_update, db_idx64_upperbound, db_idx128_end, db_idx128_find_primary, db_idx128_find_secondary, db_idx128_lowerbound, db_idx128_next, db_idx128_previous, db_idx128_remove, db_idx128_store, db_idx128_update, db_idx128_upperbound, db_idx_double_find_primary, db_idx_double_lowerbound, db_idx_double_next, db_idx_double_store, db_idx_double_update, db_lowerbound_i64, db_next_i64, db_previous_i64, db_remove_i64, db_store_i64, db_update_i64, db_upperbound_i64, cancel_deferred, eosio_assert, get_account_creation_time, get_active_producers, get_permission_last_used, get_resource_limits, is_privileged, memcmp, memcpy, memmove, memset, printdf, printhex, printi, printi128, printn, prints, prints_l, printsf, printui, printui128, pulse_assert, pulse_assert_code, pulse_assert_message, pulse_exit, read_action_data, recover_key, require_auth2, require_recipient, ripemd160, send_deferred, set_action_return_value, set_privileged, set_resource_limits, sha1, sha224, sha256, sha512
+            __ashlti3, __ashrti3, __divti3, __floatuntidf, __lshlti3, __lshrti3, __modti3, __multi3, __udivti3, __umodti3,
+            __addtf3, __subtf3, __multf3, __divtf3, __extendsftf2, __extenddftf2, __trunctfdf2, __trunctfsf2, __fixtfsi, __fixunstfsi, __floatsitf, __floatunsitf, __eqtf2, __netf2, __getf2, __letf2, __unordtf2, abort, assert_recover_key, assert_ripemd160, assert_sha1, assert_sha224, assert_sha256, assert_sha512, check_permission_authorization, check_transaction_authorization, current_time, db_end_i64, db_find_i64, db_get_i64, db_idx64_end, db_idx64_find_primary, db_idx64_find_secondary, db_idx64_lowerbound, db_idx64_next, db_idx64_previous, db_idx64_remove, db_idx64_store, db_idx64_update, db_idx64_upperbound, db_idx128_end, db_idx128_find_primary, db_idx128_find_secondary, db_idx128_lowerbound, db_idx128_next, db_idx128_previous, db_idx128_remove, db_idx128_store, db_idx128_update, db_idx128_upperbound, db_idx_double_find_primary, db_idx_double_lowerbound, db_idx_double_next, db_idx_double_store, db_idx_double_update, db_lowerbound_i64, db_next_i64, db_previous_i64, db_remove_i64, db_store_i64, db_update_i64, db_upperbound_i64, cancel_deferred, eosio_assert, get_account_creation_time, get_active_producers, get_permission_last_used, get_resource_limits, is_privileged, memcmp, memcpy, memmove, memset, printdf, printhex, printi, printi128, printn, prints, prints_l, printsf, printui, printui128, pulse_assert, pulse_assert_code, pulse_assert_message, pulse_exit, read_action_data, recover_key, require_auth2, require_recipient, ripemd160, send_deferred, set_action_return_value, set_privileged, set_resource_limits, sha1, sha224, sha256, sha512
         },
     },
 };
@@ -241,6 +242,24 @@ impl WasmRuntime {
                 "__modti3" => Function::new_typed_with_env(&mut store, &env, __modti3),
                 "__umodti3" => Function::new_typed_with_env(&mut store, &env, __umodti3),
                 "__floatuntidf" => Function::new_typed_with_env(&mut store, &env, __floatuntidf),
+                // 128-bit long double (binary128) soft-float — lets XPR's real contract wasm run (byte-1:1)
+                "__addtf3" => Function::new_typed_with_env(&mut store, &env, __addtf3),
+                "__subtf3" => Function::new_typed_with_env(&mut store, &env, __subtf3),
+                "__multf3" => Function::new_typed_with_env(&mut store, &env, __multf3),
+                "__divtf3" => Function::new_typed_with_env(&mut store, &env, __divtf3),
+                "__extendsftf2" => Function::new_typed_with_env(&mut store, &env, __extendsftf2),
+                "__extenddftf2" => Function::new_typed_with_env(&mut store, &env, __extenddftf2),
+                "__trunctfdf2" => Function::new_typed_with_env(&mut store, &env, __trunctfdf2),
+                "__trunctfsf2" => Function::new_typed_with_env(&mut store, &env, __trunctfsf2),
+                "__fixtfsi" => Function::new_typed_with_env(&mut store, &env, __fixtfsi),
+                "__fixunstfsi" => Function::new_typed_with_env(&mut store, &env, __fixunstfsi),
+                "__floatsitf" => Function::new_typed_with_env(&mut store, &env, __floatsitf),
+                "__floatunsitf" => Function::new_typed_with_env(&mut store, &env, __floatunsitf),
+                "__eqtf2" => Function::new_typed_with_env(&mut store, &env, __eqtf2),
+                "__netf2" => Function::new_typed_with_env(&mut store, &env, __netf2),
+                "__getf2" => Function::new_typed_with_env(&mut store, &env, __getf2),
+                "__letf2" => Function::new_typed_with_env(&mut store, &env, __letf2),
+                "__unordtf2" => Function::new_typed_with_env(&mut store, &env, __unordtf2),
                 "action_data_size" => Function::new_typed_with_env(&mut store, &env, action_data_size),
                 "read_action_data" => Function::new_typed_with_env(&mut store, &env, read_action_data),
                 "current_receiver" => Function::new_typed_with_env(&mut store, &env, current_receiver),
