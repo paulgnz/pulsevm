@@ -4,7 +4,7 @@ use pulsevm_error::ChainError;
 use pulsevm_ffi::{Authority, CxxTimePoint, Database, PermissionObject};
 
 use crate::{
-    PULSE_NAME,
+    EOSIO_NAME, PULSE_NAME,
     chain::{
         name::Name,
         pulse_contract::{DeleteAuth, LinkAuth, UnlinkAuth, UpdateAuth},
@@ -35,7 +35,7 @@ impl AuthorizationManager {
         for act in actions.iter() {
             let mut special_case = false;
 
-            if act.account().as_u64() == PULSE_NAME {
+            if act.account().as_u64() == PULSE_NAME || act.account().as_u64() == EOSIO_NAME {
                 special_case = true;
 
                 match *act.name() {

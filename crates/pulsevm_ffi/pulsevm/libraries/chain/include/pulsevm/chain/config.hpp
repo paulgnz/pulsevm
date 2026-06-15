@@ -18,7 +18,9 @@ namespace pulsevm { namespace chain { namespace config {
     const static int      block_interval_us = block_interval_ms*1000;
     const static uint64_t block_timestamp_epoch = 946684800000ll; // epoch is year 2000.
 
-   const static uint32_t genesis_num_supported_key_types = 2;
+   // 1 = K1 only, 2 = +R1 (secp256r1), 3 = +WA (WebAuthn). XPR uses WebAuthn/passkey
+   // keys heavily, so support all three from genesis for a true 1:1 migration.
+   const static uint32_t genesis_num_supported_key_types = 3;
 
    const static uint32_t   default_max_block_net_usage                  = 1024 * 1024; /// at 500ms blocks and 200byte trx, this enables ~10,000 TPS burst
    const static uint32_t   default_target_block_net_usage_pct           = 10 * percent_1; /// we target 1000 TPS

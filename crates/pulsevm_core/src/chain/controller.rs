@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    PULSE_NAME,
+    EOSIO_NAME, PULSE_NAME,
     block::{BlockStatus, SignedBlock},
     chain::{
         apply_context::ApplyContext,
@@ -58,6 +58,16 @@ pub static APPLY_HANDLERS: LazyLock<ApplyHandlerMap> = LazyLock::new(|| {
     m.insert((PULSE_NAME, PULSE_NAME, DELETEAUTH_NAME), deleteauth);
     m.insert((PULSE_NAME, PULSE_NAME, LINKAUTH_NAME), linkauth);
     m.insert((PULSE_NAME, PULSE_NAME, UNLINKAUTH_NAME), unlinkauth);
+    // 1:1 XPR migration: the system account is `eosio`, so the same native handlers
+    // must fire for eosio::{newaccount,setcode,setabi,updateauth,deleteauth,linkauth,
+    // unlinkauth} — otherwise these silently dispatch to eosio's wasm and no-op.
+    m.insert((EOSIO_NAME, EOSIO_NAME, NEWACCOUNT_NAME), newaccount);
+    m.insert((EOSIO_NAME, EOSIO_NAME, SETCODE_NAME), setcode);
+    m.insert((EOSIO_NAME, EOSIO_NAME, SETABI_NAME), setabi);
+    m.insert((EOSIO_NAME, EOSIO_NAME, UPDATEAUTH_NAME), updateauth);
+    m.insert((EOSIO_NAME, EOSIO_NAME, DELETEAUTH_NAME), deleteauth);
+    m.insert((EOSIO_NAME, EOSIO_NAME, LINKAUTH_NAME), linkauth);
+    m.insert((EOSIO_NAME, EOSIO_NAME, UNLINKAUTH_NAME), unlinkauth);
     m
 });
 
