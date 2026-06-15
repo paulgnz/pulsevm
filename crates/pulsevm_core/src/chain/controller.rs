@@ -202,6 +202,25 @@ impl Controller {
                     stats.accounts, stats.permissions, stats.code, stats.tables, stats.rows,
                     stats.idx64, stats.idx128, stats.idx_double
                 );
+                // Resume at the source chain's head height + time (Antelope snapshot-restore
+                // semantics) rather than block 1 / genesis epoch. block_num is encoded in the
+                // previous-block-id's high 4 bytes; block_log is map-keyed so a high start is fine.
+                if let Some((bn, slot)) = stats.head {
+                    if bn > 1 {
+                        let mut prev = [0u8; 32];
+                        prev[0..4].copy_from_slice(&(bn - 1).to_be_bytes());
+                        self.last_accepted_block = SignedBlock::new(
+                            Id::new(prev),
+                            BlockTimestamp::new(slot),
+                            PULSE_NAME,
+                            VecDeque::new(),
+                            Digest::default(),
+                            Digest::default(),
+                        );
+                        self.preferred_id = self.last_accepted_block.id()?;
+                        info!("resuming at source head: block {} (slot {})", bn, slot);
+                    }
+                }
             }
 
             self.db
