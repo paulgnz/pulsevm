@@ -10,10 +10,14 @@
 //! reader will feed this same apply path.
 
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use pulsevm_error::ChainError;
-use pulsevm_ffi::{AccountMetadataObject, AccountObject, Database, TableObject};
+use pulsevm_ffi::{
+    AccountMetadataObject, AccountObject, Authority, CxxTimePoint, Database, KeyWeight,
+    PermissionLevel, PermissionLevelWeight, TableObject, WaitWeight, parse_public_key,
+};
 use pulsevm_name::Name;
 
 #[derive(Debug, Default, Deserialize)]
@@ -40,6 +44,55 @@ pub struct AccountDump {
     pub net: Option<i64>,
     #[serde(default)]
     pub cpu: Option<i64>,
+    /// owner/active (and any custom) permissions — so users can log in with their existing keys.
+    #[serde(default)]
+    pub permissions: Vec<PermDump>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PermDump {
+    pub perm: String,
+    /// parent permission name ("" for owner)
+    #[serde(default)]
+    pub parent: String,
+    #[serde(default = "one")]
+    pub threshold: u32,
+    #[serde(default)]
+    pub keys: Vec<KeyW>,
+    #[serde(default)]
+    pub accounts: Vec<AcctW>,
+    #[serde(default)]
+    pub waits: Vec<WaitW>,
+}
+
+fn one() -> u32 {
+    1
+}
+
+#[derive(Debug, Deserialize)]
+pub struct KeyW {
+    pub key: String,
+    #[serde(default = "one16")]
+    pub weight: u16,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AcctW {
+    pub actor: String,
+    pub permission: String,
+    #[serde(default = "one16")]
+    pub weight: u16,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WaitW {
+    pub wait_sec: u32,
+    #[serde(default = "one16")]
+    pub weight: u16,
+}
+
+fn one16() -> u16 {
+    1
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,9 +127,72 @@ pub struct Idx64 {
 #[derive(Debug, Default)]
 pub struct ImportStats {
     pub accounts: u64,
+    pub permissions: u64,
     pub tables: u64,
     pub rows: u64,
     pub idx64: u64,
+}
+
+/// Order permissions parent-before-child (owner before active, etc.). Roots (parent "") first,
+/// then repeatedly emit any whose parent was already emitted.
+fn order_perms(perms: &[PermDump]) -> Vec<&PermDump> {
+    let mut out: Vec<&PermDump> = Vec::with_capacity(perms.len());
+    let mut placed: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut remaining: Vec<&PermDump> = perms.iter().collect();
+    loop {
+        let before = remaining.len();
+        remaining.retain(|p| {
+            if p.parent.is_empty() || placed.contains(p.parent.as_str()) {
+                out.push(p);
+                placed.insert(p.perm.as_str());
+                false
+            } else {
+                true
+            }
+        });
+        if remaining.is_empty() || remaining.len() == before {
+            break;
+        }
+    }
+    // any cycle remainder: emit anyway (parent resolves to 0)
+    out.extend(remaining);
+    out
+}
+
+fn build_authority(p: &PermDump) -> Result<Authority, ChainError> {
+    let mut keys = Vec::with_capacity(p.keys.len());
+    for k in &p.keys {
+        let pk = parse_public_key(&k.key)
+            .map_err(|e| ChainError::ParseError(format!("pubkey {}: {}", k.key, e)))?;
+        keys.push(KeyWeight {
+            key: pk,
+            weight: k.weight,
+        });
+    }
+    let mut accounts = Vec::with_capacity(p.accounts.len());
+    for a in &p.accounts {
+        accounts.push(PermissionLevelWeight {
+            permission: PermissionLevel {
+                actor: name(&a.actor)?,
+                permission: name(&a.permission)?,
+            },
+            weight: a.weight,
+        });
+    }
+    let waits = p
+        .waits
+        .iter()
+        .map(|w| WaitWeight {
+            wait_sec: w.wait_sec,
+            weight: w.weight,
+        })
+        .collect();
+    Ok(Authority {
+        threshold: p.threshold,
+        keys,
+        accounts,
+        waits,
+    })
 }
 
 /// Accept either a JSON integer or a quoted integer for u64 fields (JSON can't always carry
@@ -140,6 +256,26 @@ pub fn apply_snapshot(db: &mut Database, snap: &Snapshot) -> Result<ImportStats,
                 a.net.unwrap_or(-1),
                 a.cpu.unwrap_or(-1),
             )?;
+        }
+        // Permissions (owner/active/custom) — so the account's real keys carry over and the
+        // user can log in + sign on Pulse exactly as on XPR. Created parent-before-child.
+        if !a.permissions.is_empty() {
+            let t = CxxTimePoint::new((a.creation_date as i64) * 1_000_000);
+            let tref: &CxxTimePoint = t.as_ref().expect("CxxTimePoint::new non-null");
+            let mut ids: HashMap<&str, u64> = HashMap::new();
+            for p in order_perms(&a.permissions) {
+                let parent_id = if p.parent.is_empty() {
+                    0
+                } else {
+                    *ids.get(p.parent.as_str()).unwrap_or(&0)
+                };
+                let auth = build_authority(p)?;
+                let pptr = db.create_permission(acct, name(&p.perm)?, parent_id, &auth, tref)?;
+                // SAFETY: stable mmap object; read id immediately.
+                let pid = unsafe { &*pptr }.get_id() as u64;
+                ids.insert(p.perm.as_str(), pid);
+                stats.permissions += 1;
+            }
         }
         stats.accounts += 1;
     }
