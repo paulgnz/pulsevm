@@ -108,6 +108,10 @@ pub struct TableDump {
     pub rows: Vec<Row>,
     #[serde(default)]
     pub idx64: Vec<Idx64>,
+    #[serde(default)]
+    pub idx128: Vec<Idx128>,
+    #[serde(default)]
+    pub idx_double: Vec<IdxF64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,6 +131,21 @@ pub struct Idx64 {
     pub secondary: u64,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct Idx128 {
+    #[serde(deserialize_with = "de_u64")]
+    pub id: u64,
+    /// u128 secondary key as a decimal string
+    pub secondary: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IdxF64 {
+    #[serde(deserialize_with = "de_u64")]
+    pub id: u64,
+    pub secondary: f64,
+}
+
 #[derive(Debug, Default)]
 pub struct ImportStats {
     pub accounts: u64,
@@ -135,6 +154,8 @@ pub struct ImportStats {
     pub tables: u64,
     pub rows: u64,
     pub idx64: u64,
+    pub idx128: u64,
+    pub idx_double: u64,
 }
 
 /// Order permissions parent-before-child (owner before active, etc.). Roots (parent "") first,
@@ -332,6 +353,18 @@ pub fn apply_snapshot(db: &mut Database, snap: &Snapshot) -> Result<ImportStats,
         for i in &t.idx64 {
             db.create_index64_object(tref, payer, i.id, i.secondary)?;
             stats.idx64 += 1;
+        }
+        for i in &t.idx128 {
+            let sec: u128 = i
+                .secondary
+                .parse()
+                .map_err(|e| ChainError::ParseError(format!("idx128 secondary {}: {}", i.secondary, e)))?;
+            db.create_index128_object(tref, payer, i.id, sec)?;
+            stats.idx128 += 1;
+        }
+        for i in &t.idx_double {
+            db.create_index_double_object(tref, payer, i.id, i.secondary)?;
+            stats.idx_double += 1;
         }
         stats.tables += 1;
     }
