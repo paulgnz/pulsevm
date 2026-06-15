@@ -3,13 +3,13 @@ use pulsevm_builtins::softfloat as sf;
 use wasmer::{FunctionEnvMut, RuntimeError, WasmPtr};
 
 use crate::wasm_runtime::WasmContext;
-
 // ---------------------------------------------------------------------------
 // 128-bit long double (IEEE-754 binary128) soft-float intrinsics.
 // Antelope CDT contracts import these compiler-rt `__*tf*` builtins from `env`.
-// binary128 operands/results are passed via memory pointers (wasm32 ABI); we
-// read/write the 16-byte little-endian value and delegate the math to
-// pulsevm_builtins::softfloat (rustc_apfloat — exact IEEE-754, deterministic).
+// wasm32 ABI (verified against XPR's real eosio.token wasm): 128-bit OPERANDS are
+// passed as i64 (lo, hi) pairs; a 128-bit RESULT is returned via an sret pointer
+// (leading i32). Math is delegated to pulsevm_builtins::softfloat (rustc_apfloat —
+// exact IEEE-754, deterministic) so the real XPR contract wasm runs unmodified.
 // ---------------------------------------------------------------------------
 
 macro_rules! mem_view {
@@ -23,12 +23,11 @@ macro_rules! mem_view {
     };
 }
 #[inline]
-fn rd128(view: &wasmer::MemoryView, ptr: WasmPtr<u8>) -> Result<u128, RuntimeError> {
-    let mut b = [0u8; 16];
-    view.read(ptr.offset() as u64, &mut b)?;
-    Ok(u128::from_le_bytes(b))
+fn u128_of(lo: u64, hi: u64) -> u128 {
+    ((hi as u128) << 64) | (lo as u128)
 }
 
+// extend smaller float -> binary128 (result via ret ptr)
 pub fn __extendsftf2(
     mut env: FunctionEnvMut<WasmContext>,
     ret: WasmPtr<u8>,
@@ -49,30 +48,20 @@ pub fn __extenddftf2(
     view.write(ret.offset() as u64, &r.to_le_bytes())?;
     Ok(())
 }
-pub fn __trunctfdf2(
-    mut env: FunctionEnvMut<WasmContext>,
-    a: WasmPtr<u8>,
-) -> Result<f64, RuntimeError> {
-    mem_view!(env, store, view);
-    Ok(sf::trunctfdf2(rd128(&view, a)?))
-}
-pub fn __trunctfsf2(
-    mut env: FunctionEnvMut<WasmContext>,
-    a: WasmPtr<u8>,
-) -> Result<f32, RuntimeError> {
-    mem_view!(env, store, view);
-    Ok(sf::trunctfsf2(rd128(&view, a)?))
-}
+
+// binary128 arithmetic: ret ptr + (a_lo,a_hi,b_lo,b_hi)
 macro_rules! tf_binop {
     ($name:ident, $f:path) => {
         pub fn $name(
             mut env: FunctionEnvMut<WasmContext>,
             ret: WasmPtr<u8>,
-            a: WasmPtr<u8>,
-            b: WasmPtr<u8>,
+            a_lo: u64,
+            a_hi: u64,
+            b_lo: u64,
+            b_hi: u64,
         ) -> Result<(), RuntimeError> {
+            let r = $f(u128_of(a_lo, a_hi), u128_of(b_lo, b_hi));
             mem_view!(env, store, view);
-            let r = $f(rd128(&view, a)?, rd128(&view, b)?);
             view.write(ret.offset() as u64, &r.to_le_bytes())?;
             Ok(())
         }
@@ -83,20 +72,39 @@ tf_binop!(__subtf3, sf::subtf3);
 tf_binop!(__multf3, sf::multf3);
 tf_binop!(__divtf3, sf::divtf3);
 
+// truncate binary128 -> smaller float ((a_lo,a_hi) -> float)
+pub fn __trunctfdf2(
+    _env: FunctionEnvMut<WasmContext>,
+    a_lo: u64,
+    a_hi: u64,
+) -> Result<f64, RuntimeError> {
+    Ok(sf::trunctfdf2(u128_of(a_lo, a_hi)))
+}
+pub fn __trunctfsf2(
+    _env: FunctionEnvMut<WasmContext>,
+    a_lo: u64,
+    a_hi: u64,
+) -> Result<f32, RuntimeError> {
+    Ok(sf::trunctfsf2(u128_of(a_lo, a_hi)))
+}
+
+// binary128 -> int (truncate toward zero)
 pub fn __fixtfsi(
-    mut env: FunctionEnvMut<WasmContext>,
-    a: WasmPtr<u8>,
+    _env: FunctionEnvMut<WasmContext>,
+    a_lo: u64,
+    a_hi: u64,
 ) -> Result<i32, RuntimeError> {
-    mem_view!(env, store, view);
-    Ok(sf::fixtfsi(rd128(&view, a)?))
+    Ok(sf::fixtfsi(u128_of(a_lo, a_hi)))
 }
 pub fn __fixunstfsi(
-    mut env: FunctionEnvMut<WasmContext>,
-    a: WasmPtr<u8>,
+    _env: FunctionEnvMut<WasmContext>,
+    a_lo: u64,
+    a_hi: u64,
 ) -> Result<u32, RuntimeError> {
-    mem_view!(env, store, view);
-    Ok(sf::fixunstfsi(rd128(&view, a)?))
+    Ok(sf::fixunstfsi(u128_of(a_lo, a_hi)))
 }
+
+// int -> binary128 (result via ret ptr)
 pub fn __floatsitf(
     mut env: FunctionEnvMut<WasmContext>,
     ret: WasmPtr<u8>,
@@ -117,15 +125,18 @@ pub fn __floatunsitf(
     view.write(ret.offset() as u64, &r.to_le_bytes())?;
     Ok(())
 }
+
+// comparisons: (a_lo,a_hi,b_lo,b_hi) -> i32
 macro_rules! tf_cmp {
     ($name:ident, $f:path) => {
         pub fn $name(
-            mut env: FunctionEnvMut<WasmContext>,
-            a: WasmPtr<u8>,
-            b: WasmPtr<u8>,
+            _env: FunctionEnvMut<WasmContext>,
+            a_lo: u64,
+            a_hi: u64,
+            b_lo: u64,
+            b_hi: u64,
         ) -> Result<i32, RuntimeError> {
-            mem_view!(env, store, view);
-            Ok($f(rd128(&view, a)?, rd128(&view, b)?))
+            Ok($f(u128_of(a_lo, a_hi), u128_of(b_lo, b_hi)))
         }
     };
 }
