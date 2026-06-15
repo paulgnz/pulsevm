@@ -26,6 +26,17 @@ pub struct Snapshot {
     pub accounts: Vec<AccountDump>,
     #[serde(default)]
     pub tables: Vec<TableDump>,
+    /// Optional source-chain head, so the migrated chain resumes at the snapshot's
+    /// block height + time (like an Antelope snapshot restore) instead of block 1.
+    #[serde(default)]
+    pub head: Option<HeadDump>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HeadDump {
+    pub block_num: u32,
+    /// BlockTimestamp slot (500ms since the 2000 epoch) of the source head block.
+    pub slot: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -160,6 +171,8 @@ pub struct ImportStats {
     pub idx64: u64,
     pub idx128: u64,
     pub idx_double: u64,
+    /// (block_num, slot) of the source head, if the snapshot carried it.
+    pub head: Option<(u32, u32)>,
 }
 
 /// Order permissions parent-before-child (owner before active, etc.). Roots (parent "") first,
@@ -256,6 +269,7 @@ pub fn apply_snapshot_file(db: &mut Database, path: &str) -> Result<ImportStats,
 
 pub fn apply_snapshot(db: &mut Database, snap: &Snapshot) -> Result<ImportStats, ChainError> {
     let mut stats = ImportStats::default();
+    stats.head = snap.head.as_ref().map(|h| (h.block_num, h.slot));
 
     // Accounts first — the contract account must exist before its tables can be served (the
     // table-read RPCs look up the code account's ABI). create_account/_metadata are the same
