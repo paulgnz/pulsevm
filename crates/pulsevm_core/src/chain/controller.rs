@@ -188,8 +188,9 @@ impl Controller {
                         ChainError::GenesisError(format!("snapshot import failed: {}", e))
                     })?;
                 info!(
-                    "snapshot imported: {} accounts, {} permissions, {} code, {} tables, {} rows, {} idx64",
-                    stats.accounts, stats.permissions, stats.code, stats.tables, stats.rows, stats.idx64
+                    "snapshot imported: {} accounts, {} permissions, {} code, {} tables, {} rows, {} idx64, {} idx128, {} idx_double",
+                    stats.accounts, stats.permissions, stats.code, stats.tables, stats.rows,
+                    stats.idx64, stats.idx128, stats.idx_double
                 );
             }
 
