@@ -47,6 +47,10 @@ pub struct AccountDump {
     pub net: Option<i64>,
     #[serde(default)]
     pub cpu: Option<i64>,
+    /// actual RAM bytes the account is using (from resource_usage_object). Must be set so contract
+    /// RAM rebilling on imported rows doesn't underflow ("Ram usage delta would underflow").
+    #[serde(default)]
+    pub ram_usage: Option<i64>,
     /// owner/active (and any custom) permissions — so users can log in with their existing keys.
     #[serde(default)]
     pub permissions: Vec<PermDump>,
@@ -266,6 +270,13 @@ pub fn apply_snapshot(db: &mut Database, snap: &Snapshot) -> Result<ImportStats,
         // Every account needs its resource_limits/usage rows (genesis does this in
         // create_native_account) before set_account_limits can modify them.
         db.initialize_account_resource_limits(acct)?;
+        // Set the account's real RAM usage so contract RAM rebilling on imported rows doesn't
+        // underflow. add_pending_ram_usage adds to the (zeroed) baseline from initialize above.
+        if let Some(ru) = a.ram_usage {
+            if ru > 0 {
+                db.add_pending_ram_usage(acct, ru)?;
+            }
+        }
         // SAFETY: chainbase objects live in stable mmap; refs valid across subsequent calls.
         let aref: &AccountObject = unsafe { &*aptr };
         let mref: &AccountMetadataObject = unsafe { &*mptr };
