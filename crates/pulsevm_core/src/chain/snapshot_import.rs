@@ -65,6 +65,21 @@ pub struct AccountDump {
     /// owner/active (and any custom) permissions — so users can log in with their existing keys.
     #[serde(default)]
     pub permissions: Vec<PermDump>,
+    /// linkauth bindings (action -> permission) so action-scoping carries over — e.g. fdxten's
+    /// 'keeper' perm linked to its automation actions, and eosio governance/staking/voting links.
+    #[serde(default)]
+    pub permission_links: Vec<PermLinkDump>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PermLinkDump {
+    /// contract the action belongs to.
+    pub code: String,
+    /// action name; "" applies the link to all actions on `code`.
+    #[serde(default)]
+    pub action: String,
+    /// permission required to call the action(s).
+    pub requirement: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -171,6 +186,7 @@ pub struct ImportStats {
     pub idx64: u64,
     pub idx128: u64,
     pub idx_double: u64,
+    pub links: u64,
     /// (block_num, slot) of the source head, if the snapshot carried it.
     pub head: Option<(u32, u32)>,
 }
@@ -360,6 +376,23 @@ pub fn apply_snapshot(db: &mut Database, snap: &Snapshot) -> Result<ImportStats,
     // so accounts have source-equivalent resources from block 1; the model contracts under
     // real load thereafter. Derived from chain config — no snapshot field needed.
     db.seed_virtual_block_limits_to_ceiling()?;
+
+    // Replay permission_links (linkauth) so action->permission scoping carries over — e.g.
+    // fdxten's 'keeper' perm bound to its automation actions, plus eosio governance/staking/
+    // voting links. Done after all accounts + permissions exist (a link references this account's
+    // permission and a code account). Tolerant: a link whose perm/code is absent is logged and
+    // skipped rather than aborting the whole import.
+    for a in &snap.accounts {
+        for l in &a.permission_links {
+            match db.link_auth(name(&a.name)?, name(&l.code)?, name(&l.requirement)?, name(&l.action)?) {
+                Ok(_) => stats.links += 1,
+                Err(e) => eprintln!(
+                    "snapshot import: permission_link {}::{} -> {} for {} skipped: {}",
+                    l.code, l.action, l.requirement, a.name, e
+                ),
+            }
+        }
+    }
 
     for t in &snap.tables {
         let code = name(&t.code)?;
