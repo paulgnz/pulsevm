@@ -188,6 +188,7 @@ impl WasmRuntime {
             if !inner.code_cache.contains(&id) {
                 let code_object = db.get_code_object_by_hash(code_hash, 0, 0)?;
                 let code_object = unsafe { &*code_object };
+                eprintln!("WASMDBG run: stored code_len={}", code_object.get_code().as_slice().len());
 
                 // Create a temporary store just for module compilation
                 let mut compiler = LLVM::default();
@@ -372,6 +373,9 @@ impl WasmRuntime {
                 ctx.memory = Some(mem.clone());
             }
             Err(_) => {
+                let names: Vec<String> =
+                    instance.exports.iter().map(|(n, _)| n.clone()).collect();
+                eprintln!("WASMDBG memory export missing; exports={:?}", names);
                 return Err(ChainError::WasmRuntimeError(
                     "wasm memory export not found".to_string(),
                 ));
