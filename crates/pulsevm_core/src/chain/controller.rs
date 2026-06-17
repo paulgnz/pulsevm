@@ -1597,6 +1597,42 @@ mod tests {
         Ok(controller.last_accepted_block().block_num())
     }
 
+    // Pre-decision case: two competing siblings at height N, both received from peers (not in
+    // the local built-cache), both verified BEFORE either is accepted. If verify is properly
+    // isolated this passes; if a valid sibling fails here, that's a contained, fixable bug.
+    #[tokio::test]
+    async fn test_two_competing_siblings_both_verify_pre_accept() -> Result<(), ChainError> {
+        let chain_id =
+            Id::from_str("c8c4a47932fc0a938972f48f32489e7e91f024697e498ceb3d3c3afcf28f68b6")
+                .unwrap();
+        let private_key =
+            PrivateKey::from_str("PVT_K1_5G7JEG7CWZkGfnaQePCcJSNgocGFoeCxG1pU7r1B6rY2gueez")?;
+        let mempool = Arc::new(AsyncRwLock::new(Mempool::new()));
+        let mut mempool = mempool.write().await;
+        let mut controller = Controller::new();
+        let genesis_bytes = generate_genesis(&private_key);
+        let temp_path = get_temp_dir();
+        let config_bytes = json!({"producer_name":"pulse","producer_key":private_key.to_string()})
+            .to_string()
+            .into_bytes();
+        controller
+            .initialize(&chain_id, &config_bytes, &genesis_bytes.to_vec(), temp_path.path().to_str().unwrap())
+            .await?;
+        let chain_id = controller.chain_id().clone();
+        mempool.add_transaction(create_account(&private_key, Name::from_str("testapi")?, chain_id.clone())?);
+        let block_a = controller.build_block(&mut mempool).await?;
+        mempool.add_transaction(create_account(&private_key, Name::from_str("testapj")?, chain_id.clone())?);
+        let block_b = controller.build_block(&mut mempool).await?;
+        // simulate both arriving from peers (drop the locally-built cache so verify re-executes)
+        controller.verified_blocks.clear();
+        let ra = controller.verify_block(&block_a, &mut mempool).await;
+        let rb = controller.verify_block(&block_b, &mut mempool).await;
+        eprintln!("WEDGEDBG sibling A verify: {:?}", ra);
+        eprintln!("WEDGEDBG sibling B verify: {:?}", rb);
+        assert!(ra.is_ok() && rb.is_ok(), "both competing siblings should verify pre-decision (A={:?} B={:?})", ra, rb);
+        Ok(())
+    }
+
     // Reproduces the production multi-validator wedge: once a block at height N is ACCEPTED
     // (committed durably via db.commit in accept_block), a COMPETING block at height N can no
     // longer be verified — replay_accepted_state_to can't reconstruct the pre-N parent state to
