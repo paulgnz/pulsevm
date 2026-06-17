@@ -191,12 +191,27 @@ impl Vm for VirtualMachine {
         let genesis_bytes = request.get_ref().genesis_bytes.clone();
         let db_path = request.get_ref().chain_data_dir.clone();
         let server_addr = request.get_ref().server_addr.clone();
-        let chain_id: Id = request
+        let mut chain_id: Id = request
             .get_ref()
             .chain_id
             .clone()
             .try_into()
             .map_err(|_| Status::invalid_argument("invalid chain id"))?;
+        // 1:1 migration: honor a `chain_id` override from the chain config so the migrated
+        // chain reports the SOURCE chain's id (e.g. XPR testnet 71ee83bc...) instead of the
+        // Avalanche blockchainID — makes signatures/TAPOS/wallets transparent across migration.
+        if let Ok(cfg) = serde_json::from_slice::<serde_json::Value>(&config_bytes) {
+            if let Some(s) = cfg.get("chain_id").and_then(|v| v.as_str()) {
+                if let Ok(bytes) = hex::decode(s) {
+                    if bytes.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&bytes);
+                        chain_id = Id::new(arr);
+                        info!("chain_id overridden from config -> {}", s);
+                    }
+                }
+            }
+        }
         let controller = self.controller.clone();
         let mut controller = controller.write().await;
 

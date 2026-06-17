@@ -396,6 +396,7 @@ impl Controller {
             transaction_mroot,
             action_mroot,
         );
+        eprintln!("BPDBG build: block_num={} txs={}", block.block_num(), block.transactions.len());
 
         // We built this block so no need to verify it again
         self.verified_blocks.insert(
@@ -502,6 +503,7 @@ impl Controller {
         self.last_accepted_block = block.clone();
         self.last_accepted_block_id = block.id()?;
         self.db.commit(block.block_num() as i64)?;
+        eprintln!("BPDBG accept: committed block_num={} head_now={} state={:?}", block.block_num(), self.last_accepted_block.block_num(), self.get_state());
 
         if self.get_state() == &vm::State::NormalOp {
             info!(
