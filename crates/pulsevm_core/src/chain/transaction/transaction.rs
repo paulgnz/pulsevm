@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use pulsevm_crypto::Bytes;
 use pulsevm_error::ChainError;
 use pulsevm_proc_macros::{NumBytes, Read, Write};
@@ -59,7 +57,7 @@ impl Transaction {
         private_key: &PrivateKey,
         chain_id: &Id,
     ) -> Result<SignedTransaction, ChainError> {
-        let signed_transaction = SignedTransaction::new(self.clone(), HashSet::new(), vec![]);
+        let signed_transaction = SignedTransaction::new(self.clone(), Vec::new(), vec![]);
 
         signed_transaction.sign(private_key, chain_id)
     }

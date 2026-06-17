@@ -1,4 +1,4 @@
-use std::{collections::HashSet, io::Read as IoRead};
+use std::io::Read as IoRead;
 
 use flate2::read::ZlibDecoder;
 use pulsevm_constants::FIXED_NET_OVERHEAD_OF_PACKED_TRX;
@@ -18,7 +18,10 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackedTransaction {
-    signatures: HashSet<Signature>,      // Signatures of the transaction
+    // ORDERED vector (Antelope wire format). Was HashSet<Signature> — whose nondeterministic
+    // iteration order made pack()/digest() nondeterministic for multi-signature (cosigned) txs,
+    // so transaction_mroot differed on each re-verify -> "merkle root mismatch" -> chain wedge.
+    signatures: Vec<Signature>,          // Signatures of the transaction
     compression: TransactionCompression, // Compression type used for the transaction
     packed_context_free_data: Bytes,     // Packed context-free data, if any
     packed_trx: Bytes,                   // Packed transaction, not signed, data
@@ -31,7 +34,7 @@ pub struct PackedTransaction {
 impl PackedTransaction {
     #[inline]
     pub fn new(
-        signatures: HashSet<Signature>,
+        signatures: Vec<Signature>,
         compression: TransactionCompression,
         packed_context_free_data: Bytes,
         packed_trx: Bytes,
@@ -150,7 +153,7 @@ impl Write for PackedTransaction {
 impl Read for PackedTransaction {
     #[inline]
     fn read(data: &[u8], pos: &mut usize) -> Result<Self, ReadError> {
-        let signatures = HashSet::<Signature>::read(data, pos)?;
+        let signatures = Vec::<Signature>::read(data, pos)?;
         let compression = TransactionCompression::read(data, pos)?;
         let packed_context_free_data = Bytes::read(data, pos)?;
         let packed_trx = Bytes::read(data, pos)?;

@@ -16,7 +16,9 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq, Read, Write, NumBytes, Serialize, Default)]
 pub struct SignedTransaction {
     transaction: Transaction,
-    signatures: HashSet<Signature>,
+    // ORDERED (Antelope wire format) — was HashSet, which serialized nondeterministically and
+    // broke the transaction_mroot for cosigned txs. See packed_transaction.rs.
+    signatures: Vec<Signature>,
     context_free_data: Vec<Bytes>,
 }
 
@@ -24,7 +26,7 @@ impl SignedTransaction {
     #[inline]
     pub fn new(
         transaction: Transaction,
-        signatures: HashSet<Signature>,
+        signatures: Vec<Signature>,
         context_free_data: Vec<Bytes>,
     ) -> Self {
         Self {
@@ -40,7 +42,7 @@ impl SignedTransaction {
     }
 
     #[inline]
-    pub fn signatures(&self) -> &HashSet<Signature> {
+    pub fn signatures(&self) -> &Vec<Signature> {
         &self.signatures
     }
 
@@ -67,7 +69,7 @@ impl SignedTransaction {
             .transaction
             .signing_digest(chain_id, &self.context_free_data)?;
         let signature = private_key.sign(&digest.into())?;
-        self.signatures.insert(signature);
+        self.signatures.push(signature);
         Ok(self)
     }
 }
@@ -98,14 +100,14 @@ pub fn signing_digest(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, str::FromStr};
+    use std::str::FromStr;
 
     use pulsevm_time::TimePointSec;
 
     use crate::{
         crypto::PrivateKey,
         id::Id,
-        transaction::{SignedTransaction, Transaction, TransactionHeader},
+        transaction::{PackedTransaction, SignedTransaction, Transaction, TransactionHeader},
     };
 
     #[test]
@@ -120,7 +122,7 @@ mod tests {
                 vec![],
                 vec![],
             ),
-            HashSet::new(),
+            Vec::new(),
             vec![],
         );
         let chain_id =
@@ -140,5 +142,48 @@ mod tests {
         let recovered_keys = signed_tx.recovered_keys(&chain_id).unwrap();
         assert_eq!(recovered_keys.len(), 1);
         assert!(recovered_keys.contains(&public_key));
+    }
+
+    // Regression (consensus wedge): a multi-signature (cosigned) transaction must serialize
+    // identically every time. Signatures were stored in a HashSet whose iteration order varied
+    // per instance, so re-packing a cosigned tx (on block gossip / merkle recompute) produced a
+    // different digest each time -> nondeterministic transaction_mroot -> "merkle root mismatch"
+    // -> chain halt under concurrent cosigned load. With Vec<Signature> the order is stable.
+    #[test]
+    fn test_multisig_packed_tx_serializes_deterministically() {
+        use pulsevm_serialization::{Read, Write};
+        let chain_id =
+            Id::from_str("c8c4a47932fc0a938972f48f32489e7e91f024697e498ceb3d3c3afcf28f68b6")
+                .unwrap();
+        let k1 = PrivateKey::from_str("PVT_K1_2pjSqJxTbRHq8h8aHHTux81Ypscb36Q2syB8UJbZcUmxbfZdnT")
+            .unwrap();
+        let k2 = PrivateKey::from_str("PVT_K1_5G7JEG7CWZkGfnaQePCcJSNgocGFoeCxG1pU7r1B6rY2gueez")
+            .unwrap();
+        let tx = SignedTransaction::new(
+            Transaction::new(
+                TransactionHeader::new(TimePointSec::new(100), 1, 2, 4.into(), 3, 5.into()),
+                vec![],
+                vec![],
+            ),
+            Vec::new(),
+            vec![],
+        )
+        .sign(&k1, &chain_id)
+        .unwrap()
+        .sign(&k2, &chain_id)
+        .unwrap();
+        assert_eq!(tx.signatures.len(), 2, "expected two signatures (cosigned)");
+        let packed = PackedTransaction::from_signed_transaction(tx).unwrap();
+        let bytes = packed.pack().unwrap();
+        // Each validator reads the gossiped tx and recomputes the merkle from a re-pack — every
+        // re-pack must be byte-identical, or the transaction_mroot diverges across nodes.
+        for _ in 0..25 {
+            let p = PackedTransaction::read(&bytes, &mut 0).unwrap();
+            assert_eq!(
+                p.pack().unwrap(),
+                bytes,
+                "multisig packed tx must re-serialize identically (deterministic signature order)"
+            );
+        }
     }
 }
