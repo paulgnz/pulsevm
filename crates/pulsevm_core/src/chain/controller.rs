@@ -228,6 +228,16 @@ impl Controller {
 
             self.db
                 .set_revision(self.last_accepted_block.block_num() as i64)?;
+            // Durably commit the bulk-imported snapshot/genesis chainstate. v0.4.0 rolls
+            // back to the base block before forward-replay; if the imported state (incl.
+            // contract code_objects) is left uncommitted, that rollback discards it, so on
+            // a fresh snapshot chain every action loads cold/empty WASM ("wasm memory export
+            // not found") and no block can be produced to commit it — a deadlock. Committing
+            // here makes the snapshot the durable base so contract code is executable.
+            if self.last_accepted_block.block_num() > 1 {
+                self.db
+                    .commit(self.last_accepted_block.block_num() as i64)?;
+            }
             info!("database initialized successfully");
         }
 
