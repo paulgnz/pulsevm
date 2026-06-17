@@ -1597,6 +1597,60 @@ mod tests {
         Ok(controller.last_accepted_block().block_num())
     }
 
+    // Reproduces the production multi-validator wedge: once a block at height N is ACCEPTED
+    // (committed durably via db.commit in accept_block), a COMPETING block at height N can no
+    // longer be verified — replay_accepted_state_to can't reconstruct the pre-N parent state to
+    // re-execute the competitor (the committed sibling can't be rolled back). Under concurrent
+    // load multiple validators build competing blocks at the same height; verify fails -> none
+    // accepts -> consensus churns -> wedge. cpu is metered/deterministic, so this is state
+    // divergence on verify, NOT receipt non-determinism.
+    #[tokio::test]
+    async fn test_competing_block_at_committed_height_cannot_verify() -> Result<(), ChainError> {
+        let chain_id =
+            Id::from_str("c8c4a47932fc0a938972f48f32489e7e91f024697e498ceb3d3c3afcf28f68b6")
+                .unwrap();
+        let private_key =
+            PrivateKey::from_str("PVT_K1_5G7JEG7CWZkGfnaQePCcJSNgocGFoeCxG1pU7r1B6rY2gueez")?;
+        let mempool = Arc::new(AsyncRwLock::new(Mempool::new()));
+        let mut mempool = mempool.write().await;
+        let mut controller = Controller::new();
+        let genesis_bytes = generate_genesis(&private_key);
+        let temp_path = get_temp_dir();
+        let config_bytes = json!({"producer_name":"pulse","producer_key":private_key.to_string()})
+            .to_string()
+            .into_bytes();
+        controller
+            .initialize(&chain_id, &config_bytes, &genesis_bytes.to_vec(), temp_path.path().to_str().unwrap())
+            .await?;
+        assert_eq!(controller.last_accepted_block().block_num(), 1);
+        let chain_id = controller.chain_id().clone();
+
+        // Build two competing blocks at height 2 via build_block (real merkle roots), both on the
+        // same parent (block 1, not yet accepted). Different txs -> different blocks.
+        mempool.add_transaction(create_account(&private_key, Name::from_str("testapi")?, chain_id.clone())?);
+        let block_a = controller.build_block(&mut mempool).await?;
+        mempool.add_transaction(create_account(&private_key, Name::from_str("testapj")?, chain_id.clone())?);
+        let block_b = controller.build_block(&mut mempool).await?;
+        assert_eq!(block_a.block_num(), 2);
+        assert_eq!(block_b.block_num(), 2);
+        assert_ne!(block_a.id()?, block_b.id()?, "competing blocks must differ");
+
+        // accept block_a -> commits height 2 durably
+        controller.accept_block(&block_a.id()?, &mut mempool)?;
+        assert_eq!(controller.last_accepted_block().block_num(), 2);
+
+        // Simulate receiving the competitor block_b from a peer (drop the locally-built cache so
+        // verify actually re-executes it), then verify it at the already-committed height 2.
+        controller.verified_blocks.remove(&block_b.id()?);
+        let r = controller.verify_block(&block_b, &mut mempool).await;
+        eprintln!("WEDGEDBG competing verify_block result: {:?}", r);
+        assert!(
+            r.is_err(),
+            "REPRODUCED: competing block at committed height should fail to verify (the wedge)"
+        );
+        Ok(())
+    }
+
     // Reproduction: with last_accepted_block_id left stale (the production bug), the first
     // post-anchor block cannot be verified — replay can't find the anchor in verified_blocks.
     #[tokio::test]
