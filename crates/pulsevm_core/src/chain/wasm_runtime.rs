@@ -188,7 +188,6 @@ impl WasmRuntime {
             if !inner.code_cache.contains(&id) {
                 let code_object = db.get_code_object_by_hash(code_hash, 0, 0)?;
                 let code_object = unsafe { &*code_object };
-                eprintln!("WASMDBG run: stored code_len={}", code_object.get_code().as_slice().len());
 
                 // Create a temporary store just for module compilation
                 let mut compiler = LLVM::default();
@@ -202,7 +201,13 @@ impl WasmRuntime {
                 let temp_engine: Engine = compiler.into();
                 let temp_store = Store::new(temp_engine.clone());
 
-                let module = Module::new(temp_store.engine(), code_object.get_code().as_slice())
+                // Migrated Antelope contracts (XPR/WAX/EOS cdt builds) frequently keep
+                // their linear memory internal (no `memory` export). EOS-VM accesses it
+                // directly, but wasmer requires `exports.get_memory("memory")`. Inject a
+                // `memory` export into a transient copy before compiling — the stored
+                // code_object/hash is untouched, preserving 1:1 code_hash parity.
+                let injected = inject_memory_export(code_object.get_code().as_slice());
+                let module = Module::new(temp_store.engine(), injected.as_slice())
                     .map_err(|e| ChainError::WasmRuntimeError(e.to_string()))?;
                 inner.code_cache.put(
                     id,
@@ -433,4 +438,112 @@ impl WasmRuntime {
             ))),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Migrated-contract WASM compat: ensure the linear memory is exported as
+// "memory". Antelope cdt builds often keep memory internal; EOS-VM reads it
+// directly but wasmer requires the export. We patch a transient copy at compile
+// time so the stored code_object / code_hash stays byte-identical (1:1 parity).
+// ---------------------------------------------------------------------------
+fn read_uleb(b: &[u8]) -> (u64, usize) {
+    let (mut val, mut shift, mut n) = (0u64, 0u32, 0usize);
+    loop {
+        let x = b[n];
+        val |= ((x & 0x7f) as u64) << shift;
+        n += 1;
+        if x & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+    }
+    (val, n)
+}
+
+fn write_uleb(out: &mut Vec<u8>, mut v: u64) {
+    loop {
+        let mut x = (v & 0x7f) as u8;
+        v >>= 7;
+        if v != 0 {
+            x |= 0x80;
+        }
+        out.push(x);
+        if v == 0 {
+            break;
+        }
+    }
+}
+
+fn inject_memory_export(wasm: &[u8]) -> Vec<u8> {
+    if wasm.len() < 8 {
+        return wasm.to_vec();
+    }
+    // Pass 1: detect an existing "memory" export and whether a memory section exists.
+    let mut has_mem_export = false;
+    let mut has_memory_section = false;
+    let mut i = 8;
+    while i < wasm.len() {
+        let id = wasm[i];
+        i += 1;
+        if i >= wasm.len() {
+            return wasm.to_vec();
+        }
+        let (size, n) = read_uleb(&wasm[i..]);
+        i += n;
+        let end = i + size as usize;
+        if end > wasm.len() {
+            return wasm.to_vec();
+        }
+        let content = &wasm[i..end];
+        if id == 5 {
+            has_memory_section = true;
+        }
+        if id == 7 {
+            let (cnt, mut p) = read_uleb(content);
+            for _ in 0..cnt {
+                let (nl, k) = read_uleb(&content[p..]);
+                let name = &content[p + k..p + k + nl as usize];
+                p += k + nl as usize + 1; // name + export-kind byte
+                let (_idx, k2) = read_uleb(&content[p..]);
+                p += k2;
+                if name == b"memory" {
+                    has_mem_export = true;
+                }
+            }
+        }
+        i = end;
+    }
+    if has_mem_export || !has_memory_section {
+        return wasm.to_vec();
+    }
+    // Pass 2: rebuild, appending a `memory` export (memory index 0) to section 7.
+    let mut out = Vec::with_capacity(wasm.len() + 12);
+    out.extend_from_slice(&wasm[0..8]);
+    let mut i = 8;
+    while i < wasm.len() {
+        let sec_start = i;
+        let id = wasm[i];
+        i += 1;
+        let (size, n) = read_uleb(&wasm[i..]);
+        i += n;
+        let end = i + size as usize;
+        if id == 7 {
+            let content = &wasm[i..end];
+            let (cnt, cn) = read_uleb(content);
+            let mut nc = Vec::with_capacity(content.len() + 12);
+            write_uleb(&mut nc, cnt + 1);
+            nc.extend_from_slice(&content[cn..]);
+            write_uleb(&mut nc, 6);
+            nc.extend_from_slice(b"memory");
+            nc.push(0x02); // export kind: memory
+            write_uleb(&mut nc, 0); // memory index 0
+            out.push(7);
+            write_uleb(&mut out, nc.len() as u64);
+            out.extend_from_slice(&nc);
+        } else {
+            out.extend_from_slice(&wasm[sec_start..end]);
+        }
+        i = end;
+    }
+    out
 }
