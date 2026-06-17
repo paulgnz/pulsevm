@@ -586,6 +586,28 @@ impl Controller {
         let transaction_mroot = self.calculate_trx_merkle(&transaction_receipts)?;
         let action_mroot = self.calculate_action_merkle(&mut action_receipt_digests)?;
 
+        // WEDGEDIAG: capture the exact divergence when re-execution doesn't match the producer's
+        // block (the consensus-wedge signal). Dumps which root diverged + the first differing
+        // receipt (Debug shows status/cpu_usage_us/net_usage_words) + the state revision.
+        let blk_trx_mroot = block.signed_block_header.header.transaction_mroot.clone();
+        let blk_act_mroot = block.signed_block_header.header.action_mroot.clone();
+        if transaction_mroot != blk_trx_mroot || action_mroot != blk_act_mroot {
+            let bn = block.block_num();
+            let bid = block.id().map(|i| i.to_string()).unwrap_or_else(|_| "?".into());
+            eprintln!(
+                "WEDGEDIAG height={} block={} status={:?} rev={} trx_mroot(producer={} recomputed={}) act_mroot(producer={} recomputed={}) prod_txs={} recomputed_txs={}",
+                bn, bid, block_status, self.db.revision(),
+                blk_trx_mroot, transaction_mroot, blk_act_mroot, action_mroot,
+                block.transactions.len(), transaction_receipts.len()
+            );
+            for (i, (prod, recomp)) in block.transactions.iter().zip(transaction_receipts.iter()).enumerate() {
+                if prod != recomp {
+                    eprintln!("WEDGEDIAG   tx#{} DIVERGES\n    producer  = {:?}\n    recomputed= {:?}", i, prod, recomp);
+                    break;
+                }
+            }
+        }
+
         // Update resource limits
         let global_property = Controller::get_global_properties(&self.db)?;
         let chain_config = global_property.get_chain_config();
