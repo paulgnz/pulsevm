@@ -220,6 +220,13 @@ impl Controller {
                             Digest::default(),
                             Digest::default(),
                         );
+                        // Keep last_accepted_block_id in lockstep with last_accepted_block.
+                        // The genesis baseline set it (line ~178) to the genesis block; if we
+                        // don't update it to the synthetic anchor here, replay_accepted_state_to
+                        // loops `while cursor != last_accepted_block_id` against a stale id and
+                        // tries to find the anchor in verified_blocks (it isn't there) → the first
+                        // post-anchor block fails to verify/accept and the head freezes at N.
+                        self.last_accepted_block_id = self.last_accepted_block.id()?;
                         self.preferred_id = self.last_accepted_block.id()?;
                         info!("resuming at source head: block {} (slot {})", bn, slot);
                     }
@@ -1507,6 +1514,116 @@ mod tests {
         let found = controller.database().is_known_unexpired_transaction(&digest)?;
         assert!(!found);
 
+        Ok(())
+    }
+
+    // ---- 1:1 snapshot-resume block-production repro -------------------------------
+    // Reproduces the production freeze: after a native snapshot import the head sits at
+    // the synthetic anchor (e.g. 390536704, producer "pulse") and never advances even
+    // though transactions are accepted. Root cause: initialize()'s genesis baseline sets
+    // `last_accepted_block_id` (~line 178), then the snapshot branch replaces
+    // `last_accepted_block` with the synthetic anchor and sets `preferred_id` but does
+    // NOT update `last_accepted_block_id` — leaving it pointing at the genesis block.
+    // `replay_accepted_state_to` loops `while cursor != last_accepted_block_id` and, with
+    // the stale id, tries to find the anchor in `verified_blocks` (it isn't there) → the
+    // first post-anchor block fails to verify and the head freezes.
+    //
+    // Controlled variable: `set_block_id`. This mirrors the exact field state the snapshot
+    // branch leaves: genesis-init sets last_accepted_block_id; we then move
+    // last_accepted_block + preferred_id to the anchor; only the fix also moves
+    // last_accepted_block_id. We always commit(N) (the snapshot path does, and it is
+    // required so rollback-to-base doesn't discard imported code) — proving commit is NOT
+    // the cause.
+    async fn resume_and_produce(set_block_id: bool) -> Result<u32, ChainError> {
+        let chain_id =
+            Id::from_str("c8c4a47932fc0a938972f48f32489e7e91f024697e498ceb3d3c3afcf28f68b6")
+                .unwrap();
+        let private_key =
+            PrivateKey::from_str("PVT_K1_5G7JEG7CWZkGfnaQePCcJSNgocGFoeCxG1pU7r1B6rY2gueez")?;
+        let mempool = Arc::new(AsyncRwLock::new(Mempool::new()));
+        let mut mempool = mempool.write().await;
+        let mut controller = Controller::new();
+        let genesis_bytes = generate_genesis(&private_key);
+        let temp_path = get_temp_dir();
+        let config_bytes = json!({
+            "producer_name": "pulse",
+            "producer_key": private_key.to_string(),
+        })
+        .to_string()
+        .into_bytes();
+        controller
+            .initialize(
+                &chain_id,
+                &config_bytes,
+                &genesis_bytes.to_vec(),
+                temp_path.path().to_str().unwrap(),
+            )
+            .await?;
+        assert_eq!(controller.last_accepted_block().block_num(), 1);
+        // After genesis init, last_accepted_block_id points at the genesis block.
+
+        // Fabricate the synthetic anchor at height N exactly like the snapshot import.
+        let n: u32 = 390_536_704;
+        let mut prev = [0u8; 32];
+        prev[0..4].copy_from_slice(&(n - 1).to_be_bytes());
+        let anchor = SignedBlock::new(
+            Id::new(prev),
+            BlockTimestamp::now(),
+            PULSE_NAME,
+            VecDeque::new(),
+            Digest::default(),
+            Digest::default(),
+        );
+        assert_eq!(anchor.block_num(), n, "anchor should be at snapshot height");
+        controller.last_accepted_block = anchor.clone();
+        controller.preferred_id = anchor.id()?;
+        // The snapshot branch (buggy) skips this; the fix performs it.
+        if set_block_id {
+            controller.last_accepted_block_id = anchor.id()?;
+        }
+        controller.db.set_revision(n as i64)?;
+        controller.db.commit(n as i64)?; // snapshot path always commits the base
+
+        // Produce block N+1 via the real path: queue a tx and let build_block execute it
+        // and compute the correct merkle roots (build_block also runs replay against the
+        // anchor, so with a stale last_accepted_block_id it fails here, reproducing the
+        // freeze). The locally built block is inserted into verified_blocks, so accept_block
+        // can finalize it directly.
+        let chain_id = controller.chain_id().clone();
+        mempool.add_transaction(create_account(&private_key, Name::from_str("testapi")?, chain_id)?);
+        let block = controller.build_block(&mut mempool).await?;
+        assert_eq!(block.block_num(), n + 1, "built block should be N+1");
+        controller.accept_block(&block.id()?, &mut mempool)?;
+        Ok(controller.last_accepted_block().block_num())
+    }
+
+    // Reproduction: with last_accepted_block_id left stale (the production bug), the first
+    // post-anchor block cannot be verified — replay can't find the anchor in verified_blocks.
+    #[tokio::test]
+    async fn test_resume_stale_block_id_freezes() {
+        let r = resume_and_produce(false).await;
+        assert!(
+            r.is_err(),
+            "expected freeze (replay error) with stale last_accepted_block_id, got Ok({:?})",
+            r
+        );
+        let msg = format!("{:?}", r.unwrap_err());
+        assert!(
+            msg.contains("not found in verified blocks"),
+            "expected 'not found in verified blocks' replay error, got: {}",
+            msg
+        );
+    }
+
+    // Fix: updating last_accepted_block_id to the anchor lets replay no-op and the head
+    // advances to N+1 (block production resumes on the snapshot chain).
+    #[tokio::test]
+    async fn test_resume_sets_block_id_advances() -> Result<(), ChainError> {
+        let head = resume_and_produce(true).await?;
+        assert_eq!(
+            head, 390_536_705,
+            "with last_accepted_block_id set to the anchor, head advances to N+1"
+        );
         Ok(())
     }
 }
