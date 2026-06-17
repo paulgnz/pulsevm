@@ -442,6 +442,18 @@ impl Database {
             .map_err(|e| ChainError::InternalError(format!("{}", e)))
     }
 
+    /// Seed the elastic virtual block CPU/NET limits to their ceiling (max * max_multiplier).
+    /// Used at snapshot import so migrated accounts get source-equivalent resources from
+    /// block 1 instead of the genesis "congested" floor (which is ~1000x smaller).
+    pub fn seed_virtual_block_limits_to_ceiling(&mut self) -> Result<(), ChainError> {
+        let mut guard = self.inner.write()?;
+        let pinned = guard.pin_mut();
+
+        pinned
+            .seed_virtual_block_limits_to_ceiling()
+            .map_err(|e| ChainError::InternalError(format!("{}", e)))
+    }
+
     pub fn set_block_parameters(
         &mut self,
         cpu_limit_parameters: &ElasticLimitParameters,

@@ -234,6 +234,21 @@ public:
         });
     }
 
+    // 1:1 migration: a fresh snapshot-import chain starts with the elastic virtual block
+    // limits at the "congested" floor (= per-block max). The source chain long ago expanded
+    // them to the ceiling (max * max_multiplier), so without this every imported account would
+    // see ~1000x less CPU/NET until the chain slowly ramps. Seed the virtual limits to the
+    // elastic ceiling at import so accounts have source-equivalent resources from block 1
+    // (the elastic model contracts naturally under real load thereafter).
+    void seed_virtual_block_limits_to_ceiling() {
+        const auto& config = this->get<resource_limits::resource_limits_config_object>();
+        const auto& state  = this->get<resource_limits::resource_limits_state_object>();
+        this->modify(state, [&](resource_limits::resource_limits_state_object& s){
+            s.virtual_cpu_limit = (uint64_t)config.cpu_limit_parameters.max * config.cpu_limit_parameters.max_multiplier;
+            s.virtual_net_limit = (uint64_t)config.net_limit_parameters.max * config.net_limit_parameters.max_multiplier;
+        });
+    }
+
     void initialize_account_resource_limits( uint64_t account_name) {
         const auto& limits = this->create<resource_limits::resource_limits_object>([&]( resource_limits::resource_limits_object& bl ) {
             bl.owner = name(account_name);

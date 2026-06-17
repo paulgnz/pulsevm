@@ -352,6 +352,15 @@ pub fn apply_snapshot(db: &mut Database, snap: &Snapshot) -> Result<ImportStats,
         db.process_account_limit_updates()?;
     }
 
+    // 1:1 migration: the elastic virtual block CPU/NET limits are runtime accumulators not
+    // carried in the snapshot — genesis starts them at the "congested" floor (= per-block max),
+    // ~1000x below the source chain's long-expanded ceiling. Without this, every imported
+    // account sees ~1000x less CPU/NET until the chain slowly ramps (e.g. fdxdg3 31ms vs the
+    // source's 862ms). Seed the virtual limits to the elastic ceiling (max * max_multiplier)
+    // so accounts have source-equivalent resources from block 1; the model contracts under
+    // real load thereafter. Derived from chain config — no snapshot field needed.
+    db.seed_virtual_block_limits_to_ceiling()?;
+
     for t in &snap.tables {
         let code = name(&t.code)?;
         let scope = name(&t.scope)?;

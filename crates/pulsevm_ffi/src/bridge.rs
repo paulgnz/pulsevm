@@ -304,6 +304,7 @@ pub mod ffi {
             greylist_limit: u32,
         ) -> Result<CpuLimitResult>;
         pub fn process_account_limit_updates(self: Pin<&mut Database>) -> Result<()>;
+        pub fn seed_virtual_block_limits_to_ceiling(self: Pin<&mut Database>) -> Result<()>;
         pub fn set_block_parameters(
             self: Pin<&mut Database>,
             cpu_limit_parameters: &ElasticLimitParameters,
