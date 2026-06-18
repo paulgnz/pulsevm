@@ -27,6 +27,12 @@ impl TransactionReceipt {
         &self.trx
     }
 
+    /// The producer-recorded objective CPU charge (deterministic metered µs) carried in the block.
+    /// Used on verify/accept to bill the account this value instead of re-measuring wall-clock.
+    pub fn cpu_usage_us(&self) -> u32 {
+        self.header.cpu_usage_us
+    }
+
     pub fn digest(&self) -> Result<Digest, WriteError> {
         Ok(Digest::hash(self.pack()?))
     }

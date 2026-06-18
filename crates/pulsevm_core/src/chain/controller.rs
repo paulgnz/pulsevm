@@ -565,11 +565,18 @@ impl Controller {
             .clear_expired_input_transactions(&block.timestamp().to_time_point())?;
 
         for receipt in &block.transactions {
+            // On verify/accept, bill the producer-recorded objective CPU from the block (so apply
+            // + account billing are deterministic). When producing/speculating, bill subjectively.
+            let explicit_billed_cpu_time_us = match block_status {
+                BlockStatus::Verifying | BlockStatus::Accepting => Some(receipt.cpu_usage_us()),
+                _ => None,
+            };
             // Verify the transaction
-            let result = self.execute_transaction(
+            let result = self.execute_transaction_ex(
                 receipt.trx(),
                 &block.signed_block_header.header.timestamp,
                 block_status,
+                explicit_billed_cpu_time_us,
             )?;
 
             // Add trace to traces
@@ -661,12 +668,26 @@ impl Controller {
     }
 
     // This function will execute a transaction and commit it to the database
-    // This is useful for applying a transaction to the blockchain
+    // This is useful for applying a transaction to the blockchain.
+    // Subjective (wall-clock) CPU billing — used when producing/speculating.
     pub fn execute_transaction(
         &mut self,
         packed_transaction: &PackedTransaction,
         pending_block_timestamp: &BlockTimestamp,
         block_status: &BlockStatus,
+    ) -> Result<TransactionResult, ChainError> {
+        self.execute_transaction_ex(packed_transaction, pending_block_timestamp, block_status, None)
+    }
+
+    // Same as execute_transaction, but with optional objective CPU billing. On verify/accept,
+    // `explicit_billed_cpu_time_us` carries the producer's recorded objective CPU from the block
+    // so apply + account billing are deterministic (no wall-clock). None = subjective (produce).
+    pub fn execute_transaction_ex(
+        &mut self,
+        packed_transaction: &PackedTransaction,
+        pending_block_timestamp: &BlockTimestamp,
+        block_status: &BlockStatus,
+        explicit_billed_cpu_time_us: Option<u32>,
     ) -> Result<TransactionResult, ChainError> {
         let signed_transaction = packed_transaction.get_signed_transaction();
 
@@ -691,6 +712,7 @@ impl Controller {
             pending_block_timestamp.clone(),
             packed_transaction.id(),
             *block_status,
+            explicit_billed_cpu_time_us,
         );
 
         let trx = packed_transaction.get_transaction();

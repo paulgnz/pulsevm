@@ -43,6 +43,10 @@ struct TransactionContextInner {
     bill_to_account: Option<Name>,
     validate_ram_usage: HashSet<Name>,
     explicit_billed_cpu_time: bool,
+    // When explicit_billed_cpu_time is set (verify/accept), this is the producer-recorded
+    // objective CPU charge from the block. Used for BOTH the WASM metering budget and the
+    // account billing, so the apply is deterministic regardless of wall-clock / elastic state.
+    explicit_billed_cpu_time_us: u32,
     billing: Billing,
     pending_block_timestamp: BlockTimestamp,
     cpu_limit: i64,
@@ -65,6 +69,9 @@ impl TransactionContext {
         pending_block_timestamp: BlockTimestamp,
         transaction_id: &Id,
         block_status: BlockStatus,
+        // Some(producer_cpu_usage_us) on verify/accept (objective billing); None when producing
+        // or speculating (subjective wall-clock billing, as before).
+        explicit_billed_cpu_time_us: Option<u32>,
     ) -> Self {
         let mut trace = TransactionTrace::default();
         trace.id = *transaction_id;
@@ -80,7 +87,8 @@ impl TransactionContext {
                 trace,
                 bill_to_account: None,
                 validate_ram_usage: HashSet::new(),
-                explicit_billed_cpu_time: false,
+                explicit_billed_cpu_time: explicit_billed_cpu_time_us.is_some(),
+                explicit_billed_cpu_time_us: explicit_billed_cpu_time_us.unwrap_or(0),
                 billing: Billing {
                     paused_time: TimePoint::default(),
                     pseudo_start: TimePoint::now(),
@@ -118,12 +126,19 @@ impl TransactionContext {
             let first_authorizer_name = Name::new(authorizer);
             inner.bill_to_account = Some(first_authorizer_name.clone());
 
-            let (cpu_limit, _) = ResourceLimitsManager::get_account_cpu_limit(
-                &self.db,
-                &first_authorizer_name,
-                Some(1000),
-            )?;
-            inner.cpu_limit = cpu_limit;
+            if inner.explicit_billed_cpu_time {
+                // Verify/accept: trust the block's recorded objective CPU. Using it as the metering
+                // budget makes apply deterministic — the elastic account limit is wall-clock/usage
+                // dependent and was the source of the non-deterministic "CPU limit exhausted" wedge.
+                inner.cpu_limit = inner.explicit_billed_cpu_time_us as i64;
+            } else {
+                let (cpu_limit, _) = ResourceLimitsManager::get_account_cpu_limit(
+                    &self.db,
+                    &first_authorizer_name,
+                    Some(1000),
+                )?;
+                inner.cpu_limit = cpu_limit;
+            }
 
             // Update usage values of accounts to reflect new time
             ResourceLimitsManager::update_account_usage(
@@ -358,11 +373,18 @@ impl TransactionContext {
     }
 
     pub fn finalize(mut self) -> Result<TransactionResult, ChainError> {
-        let now = TimePoint::now();
-        let billed_cpu_time_us = self.get_billed_cpu_time(now)?;
-
         let mut inner = self.inner.write()?;
         inner.trace.net_usage = ((inner.trace.net_usage + 7) / 8) * 8; // Round up to nearest multiple of word size (8 bytes)
+        // Objective CPU billing in ALL paths: charge the account the DETERMINISTIC metered CPU
+        // (accumulated in the receipt during apply), identical on the producer and every verifier.
+        // Earlier the producer (Building) billed wall-clock while verifiers billed objective, so it
+        // packed txs that fit subjectively but blew the objective CPU limit -> every verifier
+        // rejected the block -> chain stuck (unverifiable block retried forever). Billing the metered
+        // value everywhere keeps build and verify in agreement: an over-budget tx fails at build too
+        // and is dropped (build_block undoes + skips it) instead of poisoning a block. Verify still
+        // uses the block's recorded cpu as the WASM metering budget (init), so the metered result
+        // equals that recorded value and billing matches the producer.
+        let billed_cpu_time_us = inner.trace.receipt.cpu_usage_us;
         inner.trace.receipt.status = TransactionStatus::Executed;
         inner.trace.receipt.net_usage_words = VarUint32((inner.trace.net_usage / 8) as u32);
 
