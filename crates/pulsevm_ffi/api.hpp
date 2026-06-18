@@ -24,7 +24,12 @@ namespace pulsevm { namespace chain {
    constexpr const char hex[]       = "hex";
 
    static constexpr uint32_t     max_return_items = 1000;
-   const static uint32_t         default_abi_serializer_max_time_us = 15*1000;
+   // RPC-only ABI (de)serialization deadline for get_table_rows / get_account.
+   // NOT used by the apply/consensus path (controller/transaction_context/apply_context
+   // do not run abi_serializer), so this is safe to raise. Bumped 15ms -> 150ms: large
+   // result pages + complex ABIs were tripping "serialization time limit 15000us
+   // exceeded" on the perps-DEX read path as the orderbook grew.
+   const static uint32_t         default_abi_serializer_max_time_us = 150*1000;
    const static fc::microseconds abi_serializer_max_time = fc::microseconds( default_abi_serializer_max_time_us );
    const static bool shorten_abi_errors = true;
 
