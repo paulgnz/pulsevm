@@ -15,6 +15,7 @@ fn main() {
     // build reports the tag (v0.3.5), anything else tag-distance + commit.
     let version = std::env::var("PULSEVM_VERSION")
         .ok()
+        .filter(|s| !s.trim().is_empty())
         .or_else(|| git(&["describe", "--tags", "--always", "--dirty"]))
         .unwrap_or_else(|| "unknown".to_string());
     let commit_long = git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
