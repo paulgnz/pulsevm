@@ -410,11 +410,10 @@ namespace pulsevm { namespace chain {
                     return v;
                 });
             }
-            if (p.key_type == float64) {
-                return get_table_rows_by_seckey<index_double_index, double>(db, p, std::move(abi), deadline, [](double v)->double {
-                    return v;
-                });
-            }
+            // NOTE: float64 / i256 / sha256 / ripemd160 secondary reads are a
+            // follow-up — they need secondary_key_traits specializations
+            // (the current traits template enables only integral keys + key256),
+            // and i256 also needs the fixed_bytes/multiprecision endian converters.
 
             EOS_ASSERT(false, chain::contract_table_query_exception,  "Unsupported secondary index type: ${t}", ("t", p.key_type));
         }
