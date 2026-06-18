@@ -106,10 +106,15 @@ impl<'a> AuthorityChecker<'a> {
         // cache lookup
         match self.cached_permissions.get(&permission.permission) {
             Some(PermissionCacheStatus::BeingEvaluated) => {
-                // cycle
-                return Err(ChainError::AuthorizationError(
-                    "permission cycle detected".to_string(),
-                ));
+                // Re-entry while this permission is still being evaluated higher up the
+                // recursion. Match nodeos's weight_tally_visitor: prune this branch to 0
+                // weight (which still prevents infinite recursion via the cache) instead
+                // of failing the entire authorization. A permission reachable by more than
+                // one path in a dense authority is legal — e.g. protonnz@active directly
+                // AND via eosio.prods@active, or a member of admin.proton@light that also
+                // references back up. Other paths can still meet the threshold; a genuine
+                // self-only cycle simply ends up unsatisfied (weight 0), not an error.
+                return Ok(0);
             }
             Some(PermissionCacheStatus::PermissionSatisfied) => {
                 return Ok(permission.weight);
