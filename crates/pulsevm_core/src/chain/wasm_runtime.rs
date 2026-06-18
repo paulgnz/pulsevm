@@ -154,6 +154,17 @@ const COST_FUNCTION: fn(&Operator) -> u64 = |operator: &Operator| -> u64 {
     }
 };
 
+/// CPU metering parity scale. The COST_FUNCTION above counts instruction-points — a
+/// deterministic substitute for Leap's wall-clock CPU billing (which can't be used when
+/// every validator re-verifies). Resource limits, however, are denominated in Leap
+/// wall-clock µs (inherited from the XPR snapshot). Empirically the point count is
+/// ~CPU_SCALE× the equivalent Leap µs (placeorder ~137k points vs ~960 µs). We therefore
+/// run the metering budget in points (limit_µs * CPU_SCALE) and convert usage back to µs
+/// (points / CPU_SCALE), so contracts bill at ~Leap magnitude and the inherited µs limits
+/// hold 1:1. Pure integer math → deterministic. Calibrated on placeorder (~143×); tune
+/// against representative contracts (possibly per-operator later).
+const CPU_SCALE: u64 = 143;
+
 impl WasmRuntime {
     pub fn new() -> Result<Self, ChainError> {
         let mut compiler = LLVM::default();
@@ -394,8 +405,10 @@ impl WasmRuntime {
             300_000_000
         };
 
-        // Set initial metering points based on resource limits
-        set_remaining_points(&mut store, &instance, cpu_limit);
+        // Run the metering budget in instruction-points (µs limit * CPU_SCALE); usage is
+        // converted back to µs below so the Leap-µs-denominated limits hold 1:1. See CPU_SCALE.
+        let budget = cpu_limit.saturating_mul(CPU_SCALE);
+        set_remaining_points(&mut store, &instance, budget);
 
         let apply_func = instance
             .exports
@@ -430,7 +443,8 @@ impl WasmRuntime {
                     return Err(e);
                 }
 
-                Ok(cpu_limit.saturating_sub(points) as u64)
+                // points consumed → µs-equivalent (see CPU_SCALE)
+                Ok(budget.saturating_sub(points) / CPU_SCALE)
             }
             MeteringPoints::Exhausted => Err(ChainError::WasmRuntimeError(format!(
                 "CPU limit of {} exhausted during apply",
