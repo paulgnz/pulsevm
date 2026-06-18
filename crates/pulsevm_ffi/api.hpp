@@ -165,8 +165,16 @@ namespace pulsevm { namespace chain {
    template<>
    uint64_t convert_to_type(const string& str, const string& desc);
 
+   // 128-bit secondary-index key. fc::variant can't round-trip unsigned __int128,
+   // so these are specialized in api.cpp (decimal/0x-hex in, decimal out).
+   template<>
+   uint128_t convert_to_type(const string& str, const string& desc);
+
    template<typename Type>
    string convert_to_string(const Type& source, const string& key_type, const string& encode_type, const string& desc);
+
+   template<>
+   string convert_to_string(const uint128_t& source, const string& key_type, const string& encode_type, const string& desc);
 
    abi_def get_abi( const database_wrapper& db, uint64_t account );
    using get_account_return_t = std::function<t_or_exception<get_account_results>()>;

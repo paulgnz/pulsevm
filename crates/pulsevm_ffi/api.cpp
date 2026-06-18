@@ -405,6 +405,16 @@ namespace pulsevm { namespace chain {
                     return v;
                 });
             }
+            if (p.key_type == i128) {
+                return get_table_rows_by_seckey<index128_index, uint128_t>(db, p, std::move(abi), deadline, [](uint128_t v)->uint128_t {
+                    return v;
+                });
+            }
+            if (p.key_type == float64) {
+                return get_table_rows_by_seckey<index_double_index, double>(db, p, std::move(abi), deadline, [](double v)->double {
+                    return v;
+                });
+            }
 
             EOS_ASSERT(false, chain::contract_table_query_exception,  "Unsupported secondary index type: ${t}", ("t", p.key_type));
         }
@@ -443,11 +453,49 @@ namespace pulsevm { namespace chain {
         }
     }
 
+    template<>
+    uint128_t convert_to_type(const string& str, const string& desc) {
+        // Parse a 128-bit secondary-index key: decimal, or 0x-prefixed hex.
+        // fc::variant can't round-trip unsigned __int128, so parse explicitly.
+        string s = str;
+        boost::trim(s);
+        EOS_ASSERT( !s.empty(), chain_type_exception, "Could not convert empty ${desc} string to uint128_t", ("desc", desc) );
+        uint128_t value = 0;
+        if( s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') ) {
+            EOS_ASSERT( s.size() <= 34, chain_type_exception, "Could not convert ${desc} hex '${str}' to uint128_t (too large)", ("desc", desc)("str", str) );
+            for( size_t i = 2; i < s.size(); ++i ) {
+                char c = s[i];
+                uint8_t d;
+                if( c >= '0' && c <= '9' )      d = (uint8_t)(c - '0');
+                else if( c >= 'a' && c <= 'f' ) d = (uint8_t)(c - 'a' + 10);
+                else if( c >= 'A' && c <= 'F' ) d = (uint8_t)(c - 'A' + 10);
+                else { EOS_ASSERT( false, chain_type_exception, "Could not convert ${desc} hex '${str}' to uint128_t", ("desc", desc)("str", str) ); d = 0; }
+                value = (value << 4) | d;
+            }
+        } else {
+            for( char c : s ) {
+                EOS_ASSERT( c >= '0' && c <= '9', chain_type_exception, "Could not convert ${desc} string '${str}' to uint128_t", ("desc", desc)("str", str) );
+                value = value * 10 + (uint128_t)(c - '0');
+            }
+        }
+        return value;
+    }
+
     template<typename Type>
     string convert_to_string(const Type& source, const string& key_type, const string& encode_type, const string& desc) {
         try {
             return fc::variant(source).as<string>();
         } FC_RETHROW_EXCEPTIONS(warn, "Could not convert ${desc} from '${source}' to string.", ("desc", desc)("source",source) )
+    }
+
+    template<>
+    string convert_to_string(const uint128_t& source, const string& key_type, const string& encode_type, const string& desc) {
+        // Render decimal (round-trips through convert_to_type<uint128_t> as next_key).
+        if( source == 0 ) return "0";
+        uint128_t v = source;
+        string s;
+        while( v > 0 ) { s.insert( s.begin(), char('0' + (int)(v % 10)) ); v /= 10; }
+        return s;
     }
 
     uint64_t get_table_index_name(const get_table_rows_params& p, bool& primary) {
