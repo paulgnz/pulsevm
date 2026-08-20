@@ -625,7 +625,7 @@ fn resources_round_trip() {
         virtual_net_limit: 12,
         virtual_cpu_limit: 13,
     };
-    import_resource_limits_state(&d, &state).unwrap();
+    import_resource_limits_state(&d, &state, 1).unwrap();
     let mut expected = Vec::new();
     put_acc(&mut expected, &acc(1, 2, 3));
     put_acc(&mut expected, &acc(4, 5, 6));
@@ -642,7 +642,7 @@ fn resources_round_trip() {
         virtual_net_limit: 999,
         ..state
     };
-    import_resource_limits_state(&d, &other).unwrap();
+    import_resource_limits_state(&d, &other, 1).unwrap();
     assert_eq!(d.state_virtual_limits(), Some((13, 12)));
 }
 
@@ -698,7 +698,7 @@ fn global_property_config_and_sequence_round_trip() {
             max_call_depth: 251,
         },
     };
-    import_global_property(&d, &gpo).unwrap();
+    import_global_property(&d, &gpo, 1).unwrap();
     let params = d.chain_config_params().unwrap();
     assert_eq!(params.max_block_cpu_usage, 200000);
     assert_eq!(params.max_transaction_cpu_usage, 150000);
@@ -737,6 +737,7 @@ fn global_property_config_and_sequence_round_trip() {
             account_cpu_usage_average_window: 172800,
             account_net_usage_average_window: 172800,
         },
+        1,
     )
     .unwrap();
     let (cpu, net) = d.resource_config_elastic().unwrap();
@@ -773,4 +774,130 @@ fn transactions_round_trip() {
     // Idempotent.
     assert_eq!(import_transactions(&d, ok(rows)).unwrap(), 2);
     assert_eq!(d.transaction_state_bytes(), expected);
+}
+
+/// The cpu_scale conversion (source µs -> metering points) reaches exactly the
+/// CPU-denominated consensus config and nothing else. The values are XPR
+/// testnet's real ones: imported at scale 1 a transaction gets a 150000-POINT
+/// budget (too small to run a transfer); at scale 143 the same config carries
+/// the source's semantics in this VM's points.
+#[test]
+fn cpu_scale_converts_the_cpu_denominated_config_only() {
+    let d = db();
+    let base = pulsevm_chain_types::ChainConfigV0 {
+        max_block_net_usage: 1048576,
+        target_block_net_usage_pct: 1000,
+        max_transaction_net_usage: 524288,
+        base_per_transaction_net_usage: 12,
+        net_usage_leeway: 500,
+        context_free_discount_net_usage_num: 20,
+        context_free_discount_net_usage_den: 100,
+        max_block_cpu_usage: 200000,
+        target_block_cpu_usage_pct: 1000,
+        max_transaction_cpu_usage: 150000,
+        min_transaction_cpu_usage: 100,
+        max_transaction_lifetime: 3600,
+        deferred_trx_expiration_window: 600,
+        max_transaction_delay: 3888000,
+        max_inline_action_size: 4096,
+        max_inline_action_depth: 4,
+        max_authority_depth: 6,
+    };
+    let gpo = GlobalPropertyRow {
+        proposed_schedule_block_num: None,
+        proposed_schedule: ProducerAuthoritySchedule {
+            version: 0,
+            producers: vec![],
+        },
+        configuration: SnapshotChainConfig {
+            base,
+            max_action_return_value_size: 256,
+        },
+        chain_id: Digest::hash(b"a chain"),
+        kv_configuration: KvDatabaseConfig {
+            max_key_size: 0,
+            max_value_size: 0,
+            max_iterators: 0,
+        },
+        wasm_configuration: WasmConfig {
+            max_mutable_global_bytes: 1024,
+            max_table_elements: 1024,
+            max_section_elements: 8192,
+            max_linear_memory_init: 65536,
+            max_func_local_bytes: 8192,
+            max_nested_structures: 1024,
+            max_symbol_bytes: 8192,
+            max_module_bytes: 20971520,
+            max_code_bytes: 20971520,
+            max_pages: 528,
+            max_call_depth: 251,
+        },
+    };
+    import_global_property(&d, &gpo, 143).unwrap();
+    let params = d.chain_config_params().unwrap();
+    // CPU magnitudes are converted...
+    assert_eq!(params.max_block_cpu_usage, 200000 * 143);
+    assert_eq!(params.max_transaction_cpu_usage, 150000 * 143);
+    assert_eq!(params.min_transaction_cpu_usage, 100 * 143);
+    // ...while percentages and NET/byte-denominated fields are untouched.
+    assert_eq!(params.target_block_cpu_usage_pct, 1000);
+    assert_eq!(params.max_block_net_usage, 1048576);
+    assert_eq!(params.max_transaction_net_usage, 524288);
+    assert_eq!(params.max_inline_action_size, 4096);
+
+    // Elastic CPU parameters scale; NET parameters do not.
+    let elastic = |target: u64, max: u64| SnapshotElasticLimitParameters {
+        target,
+        max,
+        periods: 120,
+        max_multiplier: 1000,
+        contract_rate: SnapshotRatio {
+            numerator: 99,
+            denominator: 100,
+        },
+        expand_rate: SnapshotRatio {
+            numerator: 1000,
+            denominator: 999,
+        },
+    };
+    import_resource_limits_config(
+        &d,
+        &ResourceLimitsConfigRow {
+            cpu_limit_parameters: elastic(20000, 200000),
+            net_limit_parameters: elastic(104857, 1048576),
+            account_cpu_usage_average_window: 172800,
+            account_net_usage_average_window: 172800,
+        },
+        143,
+    )
+    .unwrap();
+    let (cpu, net) = d.resource_config_elastic().unwrap();
+    assert_eq!((cpu.target, cpu.max), (20000 * 143, 200000 * 143));
+    assert_eq!((net.target, net.max), (104857, 1048576));
+
+    // Virtual CPU capacity and pending CPU usage scale; weights, RAM and the
+    // NET side do not.
+    let state = ResourceLimitsStateRow {
+        average_block_net_usage: acc(1, 2, 3),
+        average_block_cpu_usage: acc(4, 5, 6),
+        pending_net_usage: 7,
+        pending_cpu_usage: 8,
+        total_net_weight: 9,
+        total_cpu_weight: 10,
+        total_ram_bytes: 11,
+        virtual_net_limit: 12,
+        virtual_cpu_limit: 200000000,
+    };
+    import_resource_limits_state(&d, &state, 143).unwrap();
+    assert_eq!(d.state_virtual_limits(), Some((200000000 * 143, 12)));
+    assert_eq!(d.state_total_weights(), Some((10, 9)));
+
+    // A u32 config field saturates at its range instead of wrapping.
+    assert_eq!(u32::MAX, {
+        let d2 = db();
+        let mut big = gpo.clone();
+        big.configuration.base.max_block_cpu_usage = u32::MAX;
+        import_global_property(&d2, &big, 143).unwrap();
+        d2.chain_config_params().unwrap().max_block_cpu_usage
+    });
 }

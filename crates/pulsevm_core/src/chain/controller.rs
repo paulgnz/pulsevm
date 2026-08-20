@@ -670,7 +670,16 @@ impl Controller {
                 "initializing database from snapshot {}",
                 snapshot_path.display()
             );
-            let report = self.db.import_snapshot(snapshot_path)?;
+            // Points-per-µs conversion for the imported CPU config; clamped so
+            // a stray 0 cannot zero the chain's CPU budgets.
+            let cpu_scale = self
+                .node_config
+                .as_ref()
+                .unwrap()
+                .import_cpu_scale
+                .unwrap_or(1)
+                .max(1);
+            let report = self.db.import_snapshot(snapshot_path, cpu_scale)?;
             self.adopt_imported_head(&report)?;
             imported_from_snapshot = true;
         } else if revision <= 0 {
