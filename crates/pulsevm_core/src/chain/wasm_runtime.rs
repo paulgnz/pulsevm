@@ -947,6 +947,7 @@ mod tests {
         .unwrap();
 
         // Unrewritten, the memory is unreachable through the export table.
+        // (One engine per compile: the metering middleware is single-module.)
         let mut store = Store::new(WasmRuntime::deterministic_engine());
         let module = Module::new(&store, &wasm).unwrap();
         let instance = Instance::new(&mut store, &module, &imports! {}).unwrap();
@@ -954,6 +955,7 @@ mod tests {
 
         // Rewritten — as `run` now does before compiling — it is reachable.
         let rewritten = pulsevm_wasm_validation::ensure_memory_export(&wasm);
+        let mut store = Store::new(WasmRuntime::deterministic_engine());
         let module = Module::new(&store, rewritten.as_ref()).unwrap();
         let instance = Instance::new(&mut store, &module, &imports! {}).unwrap();
         assert!(instance.exports.get_memory("memory").is_ok());
