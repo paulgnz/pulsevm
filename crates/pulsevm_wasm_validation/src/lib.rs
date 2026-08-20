@@ -871,6 +871,191 @@ impl Default for WasmConstraints {
 }
 
 // ---------------------------------------------------------------------------
+// Memory-export rewrite (classic CDT compatibility)
+// ---------------------------------------------------------------------------
+
+/// Make a module's linear memory reachable through its export table.
+///
+/// Classic Antelope contracts (eosio-cpp / early CDT output — including the
+/// system contracts a snapshot import carries over) define their linear memory
+/// but export only `apply`; nodeos's eos-vm executes them by addressing memory
+/// index 0 directly, never requiring an export. A wasmer-based host can only
+/// reach an instance's memory through the export table, so a module that
+/// declares (or imports) a memory yet exports none would fail at
+/// instantiation with "memory export not found". This rewrites such a module
+/// by appending an `(export "memory" (memory 0))` entry to its export
+/// section — the same semantic eos-vm has natively.
+///
+/// The rewrite is a pure function of the input bytes, applied identically on
+/// every node at compile time, so it is consensus-neutral; the stored code
+/// (and its hash) are unchanged.
+///
+/// Bytes are returned untouched (`Cow::Borrowed`) when the module already
+/// exports a memory, declares no memory at all, has no export section
+/// (validation requires an `apply` export, so deployable code always has
+/// one), already has a non-memory export named `"memory"` (appending would
+/// collide — the module fails at instantiation exactly as before), or does
+/// not parse under the minimal MVP section grammar used here (fail-open:
+/// unchanged behavior, the real compiler reports the error).
+pub fn ensure_memory_export(wasm: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    use std::borrow::Cow;
+
+    fn uleb(bytes: &[u8], pos: &mut usize) -> Option<u64> {
+        let mut result: u64 = 0;
+        let mut shift = 0u32;
+        loop {
+            let byte = *bytes.get(*pos)?;
+            *pos += 1;
+            result |= u64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return Some(result);
+            }
+            shift += 7;
+            if shift >= 64 {
+                return None;
+            }
+        }
+    }
+
+    fn uleb_encode(mut value: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value == 0 {
+                out.push(byte);
+                return out;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+
+    // Skip a limits encoding (flags byte + min, optional max).
+    fn skip_limits(bytes: &[u8], pos: &mut usize) -> Option<()> {
+        let flags = *bytes.get(*pos)?;
+        *pos += 1;
+        uleb(bytes, pos)?;
+        if flags & 0x01 != 0 {
+            uleb(bytes, pos)?;
+        }
+        Some(())
+    }
+
+    // Walk the module's sections; on any structural surprise return None and
+    // the caller leaves the bytes untouched.
+    fn plan(wasm: &[u8]) -> Option<(bool, usize, usize, u64, usize)> {
+        if wasm.len() < 8 || &wasm[0..4] != b"\0asm" {
+            return None;
+        }
+        let mut pos = 8usize;
+        let mut has_memory = false;
+        // (section header start, body start, entry count, section end)
+        let mut export_section: Option<(usize, usize, u64, usize)> = None;
+
+        while pos < wasm.len() {
+            let header_start = pos;
+            let id = *wasm.get(pos)?;
+            pos += 1;
+            let size = uleb(wasm, &mut pos)? as usize;
+            let body_start = pos;
+            let body_end = body_start.checked_add(size)?;
+            if body_end > wasm.len() {
+                return None;
+            }
+            match id {
+                // Import section: an imported memory counts as memory 0.
+                2 => {
+                    let body = &wasm[body_start..body_end];
+                    let mut p = 0usize;
+                    let count = uleb(body, &mut p)?;
+                    for _ in 0..count {
+                        let module_len = uleb(body, &mut p)? as usize;
+                        p = p.checked_add(module_len)?;
+                        let name_len = uleb(body, &mut p)? as usize;
+                        p = p.checked_add(name_len)?;
+                        let kind = *body.get(p)?;
+                        p += 1;
+                        match kind {
+                            0x00 => {
+                                uleb(body, &mut p)?; // func type index
+                            }
+                            0x01 => {
+                                p += 1; // element type
+                                skip_limits(body, &mut p)?;
+                            }
+                            0x02 => {
+                                skip_limits(body, &mut p)?;
+                                has_memory = true;
+                            }
+                            0x03 => {
+                                p += 2; // value type + mutability
+                            }
+                            _ => return None,
+                        }
+                    }
+                }
+                // Memory section: a declared memory.
+                5 => {
+                    let body = &wasm[body_start..body_end];
+                    let mut p = 0usize;
+                    if uleb(body, &mut p)? > 0 {
+                        has_memory = true;
+                    }
+                }
+                // Export section: remember its span; bail if a memory is
+                // already exported or the name "memory" is taken.
+                7 => {
+                    let body = &wasm[body_start..body_end];
+                    let mut p = 0usize;
+                    let count = uleb(body, &mut p)?;
+                    let entries_start = p;
+                    for _ in 0..count {
+                        let name_len = uleb(body, &mut p)? as usize;
+                        let name = body.get(p..p.checked_add(name_len)?)?;
+                        p += name_len;
+                        let kind = *body.get(p)?;
+                        p += 1;
+                        uleb(body, &mut p)?; // index
+                        if kind == 0x02 || name == b"memory" {
+                            return None;
+                        }
+                    }
+                    export_section =
+                        Some((header_start, body_start + entries_start, count, body_end));
+                }
+                _ => {}
+            }
+            pos = body_end;
+        }
+
+        let (header_start, entries_start, count, section_end) = export_section?;
+        if !has_memory {
+            return None;
+        }
+        Some((has_memory, header_start, entries_start, count, section_end))
+    }
+
+    let Some((_, header_start, entries_start, count, section_end)) = plan(wasm) else {
+        return Cow::Borrowed(wasm);
+    };
+
+    // New export entry: name "memory", kind memory (0x02), index 0.
+    const NEW_ENTRY: &[u8] = &[6, b'm', b'e', b'm', b'o', b'r', b'y', 0x02, 0x00];
+
+    let mut new_body = uleb_encode(count + 1);
+    new_body.extend_from_slice(&wasm[entries_start..section_end]);
+    new_body.extend_from_slice(NEW_ENTRY);
+
+    let mut out = Vec::with_capacity(wasm.len() + NEW_ENTRY.len() + 2);
+    out.extend_from_slice(&wasm[..header_start]);
+    out.push(7);
+    out.extend_from_slice(&uleb_encode(new_body.len() as u64));
+    out.extend_from_slice(&new_body);
+    out.extend_from_slice(&wasm[section_end..]);
+    Cow::Owned(out)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1691,5 +1876,109 @@ mod tests {
 
         let wasm = wat::parse_str(&wat).unwrap();
         assert!(validate_wasm(&wasm).is_err());
+    }
+
+    // ---- ensure_memory_export -------------------------------------------
+
+    // Re-parse a (possibly rewritten) module and list its exports.
+    fn exports_of(wasm: &[u8]) -> Vec<(String, ExternalKind)> {
+        let mut out = Vec::new();
+        for payload in Parser::new(0).parse_all(wasm) {
+            if let Payload::ExportSection(reader) = payload.unwrap() {
+                for export in reader {
+                    let export = export.unwrap();
+                    out.push((export.name.to_string(), export.kind));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn ensure_memory_export_rewrites_a_classic_cdt_module() {
+        // The shape old eosio-cpp emits: a declared memory, only `apply`
+        // exported. This is what an imported chain's system contracts look
+        // like, and what eos-vm runs without needing an export.
+        let wasm = wat::parse_str(
+            "(module \
+             (memory 1) \
+             (func (export \"apply\") (param i64 i64 i64)))",
+        )
+        .unwrap();
+
+        let rewritten = ensure_memory_export(&wasm);
+        assert!(matches!(rewritten, std::borrow::Cow::Owned(_)));
+        let exports = exports_of(&rewritten);
+        assert!(
+            exports
+                .iter()
+                .any(|(n, k)| n == "memory" && *k == ExternalKind::Memory)
+        );
+        assert!(exports.iter().any(|(n, _)| n == "apply"));
+        // The rewritten module is still a valid EOSIO contract.
+        assert!(validate_wasm(&rewritten).is_ok());
+    }
+
+    #[test]
+    fn ensure_memory_export_rewrites_an_imported_memory_too() {
+        let wasm = wat::parse_str(
+            "(module \
+             (import \"env\" \"memory\" (memory 1)) \
+             (func (export \"apply\") (param i64 i64 i64)))",
+        )
+        .unwrap();
+        let rewritten = ensure_memory_export(&wasm);
+        assert!(
+            exports_of(&rewritten)
+                .iter()
+                .any(|(n, k)| n == "memory" && *k == ExternalKind::Memory)
+        );
+    }
+
+    #[test]
+    fn ensure_memory_export_leaves_an_exporting_module_alone() {
+        let wasm = wat::parse_str(
+            "(module \
+             (memory (export \"memory\") 1) \
+             (func (export \"apply\") (param i64 i64 i64)))",
+        )
+        .unwrap();
+        let rewritten = ensure_memory_export(&wasm);
+        assert!(matches!(rewritten, std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn ensure_memory_export_leaves_a_memoryless_module_alone() {
+        let wasm =
+            wat::parse_str("(module (func (export \"apply\") (param i64 i64 i64)))").unwrap();
+        assert!(matches!(
+            ensure_memory_export(&wasm),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn ensure_memory_export_leaves_a_name_collision_alone() {
+        // A non-memory export already named "memory": appending would collide,
+        // so the module is left to fail at instantiation exactly as before.
+        let wasm = wat::parse_str(
+            "(module \
+             (memory 1) \
+             (func (export \"memory\")) \
+             (func (export \"apply\") (param i64 i64 i64)))",
+        )
+        .unwrap();
+        assert!(matches!(
+            ensure_memory_export(&wasm),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn ensure_memory_export_leaves_garbage_alone() {
+        assert!(matches!(
+            ensure_memory_export(b"not wasm at all"),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 }

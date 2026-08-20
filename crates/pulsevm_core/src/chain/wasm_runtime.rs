@@ -550,12 +550,22 @@ impl WasmRuntime {
             if !inner.code_cache.contains(&id) {
                 let code_bytes = db.get_code_bytes_by_hash(code_hash, 0, 0)?;
 
+                // Classic CDT contracts (e.g. the system contracts a snapshot
+                // import carries over) declare their memory without exporting
+                // it — eos-vm addresses memory 0 directly, but this host can
+                // only reach it through the export table. Splice in the
+                // missing `(export "memory" (memory 0))` before compiling; a
+                // pure, deterministic rewrite of the compile input (the stored
+                // code and its hash are untouched).
+                let code_bytes =
+                    pulsevm_wasm_validation::ensure_memory_export(code_bytes.as_slice());
+
                 // Compile on a fresh engine carrying the pinned deterministic
                 // config (NaN canonicalization, metering, feature set).
                 let temp_engine = Self::deterministic_engine();
                 let temp_store = Store::new(temp_engine.clone());
 
-                let module = Module::new(temp_store.engine(), code_bytes.as_slice())
+                let module = Module::new(temp_store.engine(), code_bytes.as_ref())
                     .map_err(|e| ChainError::WasmRuntimeError(e.to_string()))?;
                 inner.code_cache.put(
                     id,
@@ -939,6 +949,35 @@ mod tests {
             MeteringPoints::Remaining(p) => assert_eq!(p, 0),
             MeteringPoints::Exhausted => {}
         }
+    }
+
+    // A classic-CDT-shaped module — memory declared, only `apply` exported —
+    // must instantiate with its memory reachable once the compile input has
+    // passed through `ensure_memory_export`. This is the exact shape the
+    // XPR snapshot's system contracts have (eosio.token exports only `apply`),
+    // which the runtime previously rejected with "wasm memory export not found".
+    #[test]
+    fn classic_cdt_module_gets_a_reachable_memory() {
+        let wasm = wat::parse_str(
+            r#"
+            (module
+              (memory 1)
+              (func (export "apply") (param i64 i64 i64)))
+            "#,
+        )
+        .unwrap();
+
+        // Unrewritten, the memory is unreachable through the export table.
+        let mut store = Store::new(WasmRuntime::deterministic_engine());
+        let module = Module::new(&store, &wasm).unwrap();
+        let instance = Instance::new(&mut store, &module, &imports! {}).unwrap();
+        assert!(instance.exports.get_memory("memory").is_err());
+
+        // Rewritten — as `run` now does before compiling — it is reachable.
+        let rewritten = pulsevm_wasm_validation::ensure_memory_export(&wasm);
+        let module = Module::new(&store, rewritten.as_ref()).unwrap();
+        let instance = Instance::new(&mut store, &module, &imports! {}).unwrap();
+        assert!(instance.exports.get_memory("memory").is_ok());
     }
 
     // Operator prices are consensus values (they become billed CPU committed to the
