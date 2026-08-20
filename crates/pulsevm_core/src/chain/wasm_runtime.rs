@@ -531,6 +531,36 @@ impl WasmRuntime {
         engine
     }
 
+    // Wasm instantiation resolves EVERY import up front, called or not. A
+    // migrated contract (snapshot import) was linked against the source
+    // chain's full Antelope intrinsic surface, which is wider than this
+    // host's table — e.g. XPR's token build imports `preactivate_feature` it
+    // never calls, and nodeos loads it fine. Resolve any env function the
+    // table doesn't provide with a stub of the module's own declared
+    // signature that traps only when actually CALLED — load-time parity with
+    // nodeos, and an honest "unimplemented intrinsic" error at the real call
+    // site instead of a blanket instantiation failure. Deterministic: the
+    // stub set is a pure function of the module bytes and the fixed table.
+    fn stub_missing_env_imports(store: &mut Store, module: &Module, imports: &mut Imports) {
+        for import in module.imports() {
+            if import.module() != "env" {
+                continue;
+            }
+            if let wasmer::ExternType::Function(func_type) = import.ty()
+                && !imports.exists("env", import.name())
+            {
+                let name = import.name().to_string();
+                let stub = Function::new(store, func_type.clone(), move |_args| {
+                    Err(RuntimeError::new(format!(
+                        "unimplemented intrinsic called: {}",
+                        name
+                    )))
+                });
+                imports.define("env", import.name(), stub);
+            }
+        }
+    }
+
     pub fn run(
         &mut self,
         receiver: Name,
@@ -797,6 +827,8 @@ impl WasmRuntime {
                 "get_active_producers" => Function::new_typed_with_env(&mut store, &env, get_active_producers),
             }
             };
+            let mut imports = imports;
+            Self::stub_missing_env_imports(&mut store, &module.module, &mut imports);
             WarmStore {
                 store,
                 env,
@@ -980,6 +1012,50 @@ mod tests {
         let module = Module::new(&store, rewritten.as_ref()).unwrap();
         let instance = Instance::new(&mut store, &module, &imports! {}).unwrap();
         assert!(instance.exports.get_memory("memory").is_ok());
+    }
+
+    // A module importing an env intrinsic the host table doesn't provide must
+    // still INSTANTIATE (nodeos resolves the full Antelope surface, so
+    // migrated code always loads there); the missing intrinsic only fails at
+    // the point it is actually called, with a diagnosable error. Found live:
+    // the XPR snapshot's eosio.token imports `preactivate_feature`, which it
+    // never calls, and instantiation refused the whole module.
+    #[test]
+    fn unknown_env_imports_load_and_trap_only_when_called() {
+        let wasm = wat::parse_str(
+            r#"
+            (module
+              (import "env" "preactivate_feature" (func $pf (param i32)))
+              (memory 1)
+              (func (export "apply") (param i64 i64 i64)
+                (call $pf (i32.const 0))))
+            "#,
+        )
+        .unwrap();
+        let rewritten = pulsevm_wasm_validation::ensure_memory_export(&wasm);
+        let mut store = Store::new(WasmRuntime::deterministic_engine());
+        let module = Module::new(&store, rewritten.as_ref()).unwrap();
+
+        // Without the stubs, instantiation fails outright.
+        assert!(Instance::new(&mut store, &module, &imports! {}).is_err());
+
+        // With them, the module loads...
+        let mut imports = imports! {};
+        WasmRuntime::stub_missing_env_imports(&mut store, &module, &mut imports);
+        let instance = Instance::new(&mut store, &module, &imports).unwrap();
+        set_remaining_points(&mut store, &instance, 1_000_000);
+
+        // ...and the failure moves to the actual call, with the intrinsic named.
+        let apply: TypedFunction<(i64, i64, i64), ()> = instance
+            .exports
+            .get_typed_function(&store, "apply")
+            .unwrap();
+        let err = apply.call(&mut store, 0, 0, 0).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unimplemented intrinsic called: preactivate_feature"),
+            "unexpected error: {err}"
+        );
     }
 
     // Operator prices are consensus values (they become billed CPU committed to the
