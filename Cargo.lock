@@ -3587,6 +3587,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pulsevm_snapshot_import"
+version = "0.1.0"
+dependencies = [
+ "pulsevm_chain_types",
+ "pulsevm_chaindb",
+ "pulsevm_crypto",
+ "pulsevm_name",
+ "pulsevm_snapshot",
+ "spdlog-rs",
+]
+
+[[package]]
 name = "pulsevm_softfloat"
 version = "0.1.0"
 dependencies = [
