@@ -1,0 +1,22 @@
+# per-table DefaultHasher roots of the canonical state bytes after
+# import_chainstate of the frozen XPR testnet snapshot
+# chain_id 71ee83bcf52142d61019d95f9cc5427ba6a0d7ff8accd9e2088ae2abeaf3d3dd head 390401414
+account_metadata fe882f679c90c879
+account 7679fa85399133ac
+permission 52ff2a57ecde14cb
+permission_link 5aee70dea8c068ff
+code d944e2351fb5f435
+transaction faba78518cd138b0
+resource_usage b6ff1fc72add16d4
+resource_limits a0fd487e604977bc
+resource_state f68aeaac6c1ecb06
+dynamic_global_property b001f8839cb719ed
+global_property 26ea921df1d2b775
+resource_limits_config e4a263a2fc2f7a98
+contract_table 50bdf475ea46f1e7
+contract_key_value bbe3cf3d08cf965d
+contract_idx64 8067111340721b5c
+contract_idx128 3c4050633c10b79d
+contract_idx256 43f663cdd904fd05
+contract_idx_double fd293beea23b30e2
+contract_idx_long_double bd60acb658c79e45
