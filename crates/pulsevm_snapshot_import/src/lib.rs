@@ -46,6 +46,7 @@ use pulsevm_snapshot::{
     ResourceLimitsRow,
     ResourceLimitsStateRow,
     ResourceUsageRow,
+    SignedBlockHeader,
     SnapshotAuthority,
     SnapshotElasticLimitParameters,
     SnapshotError,
@@ -71,6 +72,11 @@ pub struct ImportReport {
     /// The head block the snapshot was taken at, for height continuity.
     pub head_block_num: u32,
     pub head_block_id: Digest,
+    /// The head block's full signed header, so a boot-from-snapshot can
+    /// synthesize its last-accepted anchor (previous id, timestamp, producer,
+    /// merkle roots) field-for-field from the source chain's real header.
+    /// `None` only in the `Default` report; a real import always carries it.
+    pub head_header: Option<SignedBlockHeader>,
 
     pub accounts: u64,
     pub account_metadata: u64,
@@ -134,6 +140,7 @@ pub fn import_chainstate(
     let head = snapshot.block_header_state()?;
     report.head_block_num = head.block_num;
     report.head_block_id = head.id;
+    report.head_header = Some(head.header.clone());
 
     let gpo = snapshot.global_property()?;
     report.chain_id = gpo.chain_id;

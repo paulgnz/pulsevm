@@ -29,7 +29,10 @@ use crate::{
         apply_context::ApplyContext,
         authority::PermissionLevel,
         authorization_manager::AuthorizationManager,
-        block::BlockHeader,
+        block::{
+            BlockHeader,
+            SignedBlockHeader,
+        },
         config::{
             DELETEAUTH_NAME,
             LINKAUTH_NAME,
@@ -41,7 +44,10 @@ use crate::{
             UPDATEAUTH_NAME,
             eos_percent,
         },
-        crypto::PublicKey,
+        crypto::{
+            PublicKey,
+            Signature,
+        },
         id::Id,
         mempool::Mempool,
         name::Name,
@@ -82,7 +88,10 @@ use crate::{
             TransactionContext,
             TransactionResult,
         },
-        utils::make_ratio,
+        utils::{
+            make_ratio,
+            pulse_assert,
+        },
         wasm_runtime::WasmRuntime,
     },
     config::NodeConfig,
@@ -412,6 +421,12 @@ fn sync_directory(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The source chain's id after a boot-from-snapshot import, persisted beside
+/// the database (as hex) so every later start — which resumes rather than
+/// re-imports — keeps presenting and signing under the imported identity (see
+/// `adopt_imported_head`).
+const IMPORTED_CHAIN_ID_FILE: &str = "imported_chain_id";
+
 /// The snapshot a node last advertised in a summary, kept so it can serve the
 /// download chunks without re-snapshotting the arena on every request.
 struct CachedSnapshot {
@@ -628,7 +643,37 @@ impl Controller {
         let revision = self.db.revision();
         info!("database revision: {}", revision);
 
-        if revision <= 0 {
+        // A prior snapshot import fixed this chain's identity to the SOURCE
+        // chain's id; adopt it on every boot (the marker outlives the config's
+        // snapshot_path). Signing digests and getInfo must keep presenting it
+        // across restarts, or migrated keys' signatures would stop verifying.
+        if let Some(imported) = Self::load_imported_chain_id(db_path) {
+            info!("resuming imported chain with source chain id {}", imported);
+            self.chain_id = imported;
+            self.genesis_chain_id = imported;
+        }
+
+        let mut imported_from_snapshot = false;
+        let snapshot_path = self.node_config.as_ref().unwrap().snapshot_path.clone();
+
+        if let (true, Some(snapshot_path)) = (revision <= 0, &snapshot_path) {
+            // Third initialization path, besides genesis (fresh db) and resume
+            // (revision > 0): a fresh database with `snapshot_path` set boots
+            // FROM an Antelope portable snapshot. The import populates the
+            // arena and pins its revision to the snapshot head height;
+            // `adopt_imported_head` then anchors the last accepted block and
+            // the chain id to the source chain. The genesis block-parameter
+            // seeding below is not needed here — the snapshot carries the
+            // source chain's committed resource config, state and virtual
+            // limits.
+            info!(
+                "initializing database from snapshot {}",
+                snapshot_path.display()
+            );
+            let report = self.db.import_snapshot(snapshot_path)?;
+            self.adopt_imported_head(&report)?;
+            imported_from_snapshot = true;
+        } else if revision <= 0 {
             // Initialize the database with the genesis state
             info!("initializing database with genesis state");
             self.db.initialize_database(&rust_genesis).map_err(|e| {
@@ -742,6 +787,16 @@ impl Controller {
 
         self.validate_persisted_protocol_state(self.last_accepted_block.block_num(), false)?;
         self.ensure_protocol_version_supported(self.last_accepted_block.block_num())?;
+        if imported_from_snapshot {
+            // Both halves of the imported identity now exist — the arena state
+            // at the head revision and the anchor block in the (previously
+            // empty) block log — so checkpoint the arena: the next start finds
+            // revision > 0 and takes the ordinary resume path instead of
+            // re-importing. A crash before this point re-runs the import,
+            // which is idempotent.
+            self.db.persist()?;
+        }
+
         Ok(())
     }
 
@@ -2286,6 +2341,136 @@ impl Controller {
                 marker.display()
             ))),
         }
+    /// Adopt an imported snapshot's head as this chain's last accepted block —
+    /// the anchor every later block builds on — and take over the source
+    /// chain's identity.
+    ///
+    /// Identity: the chain id becomes the SNAPSHOT's chain id. Transaction
+    /// signing digests commit to it, so migrated accounts' existing keys keep
+    /// producing valid signatures — the point of a 1:1 migration — and getInfo
+    /// and the SHiP deltas (`genesis_chain_id`) present the same id. The id is
+    /// persisted beside the database so restarts (which skip the import)
+    /// re-adopt it.
+    ///
+    /// Anchor: the source head's header is reconstructed field-for-field, so
+    /// the anchor's id — which under this VM doubles as the Avalanche block
+    /// id — normally reproduces the source chain's Antelope head block id
+    /// byte-for-byte (both hash the same legacy header layout and splice the
+    /// big-endian height into the first four bytes). The one divergence: a
+    /// head carrying the deprecated pre-WTMsig `new_producers` field is
+    /// anchored without it and the ids differ. Height linkage — the next block
+    /// is head + 1 on an id that embeds the head height — is what correctness
+    /// needs, so a divergence is logged, not fatal.
+    fn adopt_imported_head(
+        &mut self,
+        report: &pulsevm_database::ImportReport,
+    ) -> Result<(), ChainError> {
+        let head = report.head_header.as_ref().ok_or_else(|| {
+            ChainError::InternalError("snapshot import returned no head header".to_string())
+        })?;
+
+        let chain_id = Id::new(report.chain_id.0);
+        self.chain_id = chain_id;
+        self.genesis_chain_id = chain_id;
+
+        if head.new_producers.is_some() {
+            warn!(
+                "imported snapshot head carries the deprecated new_producers field; the anchor drops it, so the anchor id will diverge from the source head id"
+            );
+        }
+        let header = BlockHeader {
+            timestamp: head.timestamp,
+            producer: head.producer,
+            confirmed: head.confirmed,
+            previous: Id::new(head.previous.0),
+            transaction_mroot: head.transaction_mroot,
+            action_mroot: head.action_mroot,
+            schedule_version: head.schedule_version,
+            new_producers: None,
+            header_extensions: head
+                .header_extensions
+                .iter()
+                .map(|(tag, bytes)| (*tag, bytes.0.clone()))
+                .collect(),
+        };
+        let anchor = SignedBlock {
+            signed_block_header: SignedBlockHeader {
+                header,
+                signature: Signature::default(),
+            },
+            transactions: VecDeque::new(),
+            block_extensions: vec![],
+        };
+        let anchor_id = anchor.id()?;
+
+        // Height continuity is non-negotiable: the anchor derives its number
+        // from the head's previous id, and both must name the same head.
+        pulse_assert(
+            anchor.block_num() == report.head_block_num,
+            ChainError::InternalError(format!(
+                "snapshot anchor height {} does not match the snapshot head {}",
+                anchor.block_num(),
+                report.head_block_num
+            )),
+        )?;
+        if anchor_id.as_bytes() == report.head_block_id.0 {
+            info!(
+                "snapshot anchor reproduces the source head block id {} at height {}",
+                anchor_id, report.head_block_num
+            );
+        } else {
+            warn!(
+                "snapshot anchor id {} diverges from the source head id {} at height {}; height linkage is intact",
+                anchor_id, report.head_block_id, report.head_block_num
+            );
+        }
+        // A producer's clock must be at or past the source head time, or the
+        // blocks it builds (stamped with wall-clock now) would sit before
+        // their parent.
+        let now = BlockTimestamp::from(TimePoint::now());
+        if now.slot() < head.timestamp.slot() {
+            warn!(
+                "system clock ({:?}) is behind the snapshot head time ({:?}); produced blocks would violate timestamp monotonicity until it catches up",
+                now, head.timestamp
+            );
+        }
+
+        self.last_accepted_block = anchor;
+        self.last_accepted_block_id = anchor_id;
+        self.preferred_id = anchor_id;
+        self.write_imported_chain_id(&chain_id)?;
+        Ok(())
+    }
+
+    fn write_imported_chain_id(&self, chain_id: &Id) -> Result<(), ChainError> {
+        let dir = self
+            .db_path
+            .as_ref()
+            .ok_or_else(|| ChainError::InternalError("import: no db path".into()))?;
+        std::fs::write(
+            std::path::Path::new(dir).join(IMPORTED_CHAIN_ID_FILE),
+            chain_id.to_string(),
+        )
+        .map_err(|e| ChainError::InternalError(format!("import: write chain id: {}", e)))
+    }
+
+    fn load_imported_chain_id(db_path: &str) -> Option<Id> {
+        let content =
+            std::fs::read_to_string(std::path::Path::new(db_path).join(IMPORTED_CHAIN_ID_FILE))
+                .ok()?;
+        content.trim().parse().ok()
+    }
+
+    fn write_synced_schedule(&self, schedule: &ProducerSchedule) -> Result<(), ChainError> {
+        let dir = self
+            .db_path
+            .as_ref()
+            .ok_or_else(|| ChainError::InternalError("accept: no db path".into()))?;
+        let packed = schedule
+            .pack()
+            .map_err(|e| ChainError::InternalError(format!("accept: pack schedule: {}", e)))?;
+        std::fs::write(std::path::Path::new(dir).join(SYNCED_SCHEDULE_FILE), packed)
+            .map_err(|e| ChainError::InternalError(format!("accept: write schedule: {}", e)))
     }
 
     fn begin_state_sync_install(&self, block_height: u32, block_id: &Id) -> Result<(), ChainError> {
@@ -6811,6 +6996,291 @@ mod tests {
             .is_known_unexpired_transaction(&result.trace.id.0.0)?;
         assert!(!found);
 
+        Ok(())
+    }
+
+    // ---- boot-from-snapshot: boot integration + block-height continuity ----
+
+    /// A mini snapshot whose accounts' owner/active key is ours, so the booted
+    /// chain can admit a transaction signed with a "migrated" key.
+    fn mini_snapshot(key: &PrivateKey) -> pulsevm_snapshot::testing::MiniSnapshot {
+        use pulsevm_snapshot::testing::{
+            MiniSnapshot,
+            TestAccount,
+        };
+        let point: [u8; 33] = key.get_public_key().into_k1().to_packed()[1..34]
+            .try_into()
+            .unwrap();
+        MiniSnapshot {
+            chain_id: [0xAB; 32],
+            head_block_num: 1_234_567,
+            // 2024-01-01T00:00:00Z — safely in the past, so wall-clock block
+            // production satisfies timestamp monotonicity.
+            head_slot: 1_514_764_800,
+            head_producer: Name::from_str("protonnz").unwrap(),
+            accounts: vec![
+                // The producer account exists on the imported chain, like a
+                // real migration where the BP account is part of the state.
+                TestAccount {
+                    name: Name::from_str("protonnz").unwrap(),
+                    key: point,
+                },
+                TestAccount {
+                    name: Name::from_str("alice").unwrap(),
+                    key: point,
+                },
+            ],
+        }
+    }
+
+    fn snapshot_node_config(private_key: &PrivateKey, snapshot: &std::path::Path) -> Vec<u8> {
+        json!({
+            "producer_name": "protonnz",
+            "producer_key": private_key.to_string(),
+            "snapshot_path": snapshot,
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    /// A signed no-op action on a codeless imported account. The authorization
+    /// path — including the chain-id-bound signature recovery — is exactly the
+    /// real one; no contract is needed (an action on an account without code
+    /// executes as a bare receipt, EOSIO-style).
+    fn imported_account_noop(
+        key: &PrivateKey,
+        chain_id: Id,
+    ) -> Result<PackedTransaction, ChainError> {
+        let alice = Name::from_str("alice")?;
+        let trx = Transaction::new(
+            TransactionHeader::new(TimePointSec::maximum(), 0, 0, 0u32.into(), 0, 0u32.into()),
+            vec![],
+            vec![Action::new(
+                alice,
+                Name::from_str("hello")?,
+                vec![],
+                vec![PermissionLevel::new(alice.as_u64(), ACTIVE_NAME.as_u64())],
+            )],
+        )
+        .sign(key, &chain_id)?;
+        PackedTransaction::from_signed_transaction(trx)
+    }
+
+    /// The full boot-from-snapshot arc on a synthetic snapshot: import on a
+    /// fresh database, anchor at the snapshot head (id, height, time), present
+    /// the source chain id, admit a transaction signed with a migrated key
+    /// against that id (and reject one signed against any other id), produce
+    /// and accept head + 1, then restart and resume without re-importing.
+    #[tokio::test]
+    async fn boots_from_a_snapshot_and_continues_at_head() -> Result<(), ChainError> {
+        // The Avalanche-handed chain id: deliberately unrelated to the
+        // snapshot, as in production (it is the createChain tx id there).
+        let avalanche_chain_id =
+            Id::from_str("c8c4a47932fc0a938972f48f32489e7e91f024697e498ceb3d3c3afcf28f68b6")
+                .unwrap();
+        let private_key =
+            PrivateKey::from_str("PVT_K1_5G7JEG7CWZkGfnaQePCcJSNgocGFoeCxG1pU7r1B6rY2gueez")?;
+        let mini = mini_snapshot(&private_key);
+        let snapshot_chain_id = Id::new(mini.chain_id);
+        let head = mini.head_block_num;
+
+        let temp_path = get_temp_dir();
+        let snapshot_file = temp_path.path().join("mini-snapshot.bin");
+        std::fs::write(&snapshot_file, mini.build()).unwrap();
+        let db_dir = temp_path.path().join("db");
+        let db_path = db_dir.to_str().unwrap().to_string();
+        std::fs::create_dir_all(&db_dir).unwrap();
+
+        let genesis_bytes = generate_genesis(&private_key);
+        let config_bytes = snapshot_node_config(&private_key, &snapshot_file);
+
+        let mut controller = Controller::new();
+        controller.initialize(&avalanche_chain_id, &config_bytes, &genesis_bytes, &db_path)?;
+
+        // Height, time and identity all anchor at the snapshot head.
+        assert_eq!(controller.last_accepted_block().block_num(), head);
+        assert_eq!(
+            controller.last_accepted_block().timestamp().slot(),
+            mini.head_slot
+        );
+        assert_eq!(controller.chain_id(), &snapshot_chain_id);
+        assert_eq!(controller.database().revision(), head as i64);
+        // The anchor's id reproduces the source chain's head block id
+        // byte-for-byte (the Antelope-id <-> Avalanche-id mapping).
+        assert_eq!(
+            controller.last_accepted_block().id()?,
+            Id::new(mini.head_id())
+        );
+        // Imported state is live.
+        assert!(
+            controller
+                .database()
+                .arena_account_exists(Name::from_str("alice")?.as_u64())
+        );
+
+        // A transaction signed with the migrated key against the SNAPSHOT
+        // chain id is admitted; the same transaction signed against any other
+        // id recovers a different key and must be rejected. This is what makes
+        // migrated keys' signatures valid — the point of the whole path.
+        let ts = *controller.last_accepted_block().timestamp();
+        let status = BlockStatus::Building;
+        let admitted = controller.push_transaction(
+            &imported_account_noop(&private_key, snapshot_chain_id)?,
+            &ts,
+            &status,
+        )?;
+        assert_eq!(
+            admitted.trace.receipt.status,
+            crate::transaction::TransactionStatus::Executed
+        );
+        assert!(
+            controller
+                .push_transaction(
+                    &imported_account_noop(&private_key, avalanche_chain_id)?,
+                    &ts,
+                    &status,
+                )
+                .is_err(),
+            "a signature bound to a different chain id must not authorize"
+        );
+
+        // Produce and accept the first post-import block: head + 1, built on
+        // the anchor, stamped at or after the snapshot head time.
+        let mempool = Arc::new(RwLock::new(Mempool::new()));
+        let mut mempool = mempool.write().await;
+        mempool.add_transaction(imported_account_noop(&private_key, snapshot_chain_id)?);
+        let block = controller.build_block(&mut mempool).await?;
+        assert_eq!(block.block_num(), head + 1);
+        assert_eq!(block.previous_id(), &Id::new(mini.head_id()));
+        assert!(block.timestamp().slot() >= mini.head_slot);
+        controller.accept_block(&block.id()?, &mut mempool)?;
+        assert_eq!(controller.last_accepted_block().block_num(), head + 1);
+
+        // Restart: the same db path resumes at head + 1 under the imported
+        // identity, and does NOT re-import (a re-import would rewind the
+        // database revision to the snapshot head).
+        controller.shutdown()?;
+        let mut restarted = Controller::new();
+        restarted.initialize(&avalanche_chain_id, &config_bytes, &genesis_bytes, &db_path)?;
+        assert_eq!(restarted.last_accepted_block().block_num(), head + 1);
+        assert_eq!(restarted.chain_id(), &snapshot_chain_id);
+        assert_eq!(restarted.database().revision(), (head + 1) as i64);
+
+        Ok(())
+    }
+
+    /// Boot a controller from the real 176MB XPR testnet snapshot and assert
+    /// the getInfo-visible facts: head block 390401414 and the XPR testnet
+    /// chain id. Optionally push a transaction signed with a real migrated
+    /// key: set PULSEVM_IMPORT_TEST_ACCOUNT / PULSEVM_IMPORT_TEST_KEY to an
+    /// account in the snapshot and its active K1 key.
+    ///
+    /// ```sh
+    /// PULSEVM_SNAPSHOT_BIN=~/snapshots/xpr-testnet-snapshot-2026-06-16.bin \
+    /// cargo test -p pulsevm_core --release boots_from_the_real_xpr -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs the 176MB XPR testnet snapshot fixture (PULSEVM_SNAPSHOT_BIN)"]
+    fn boots_from_the_real_xpr_testnet_snapshot() -> Result<(), ChainError> {
+        let snapshot_path = std::env::var("PULSEVM_SNAPSHOT_BIN")
+            .expect("set PULSEVM_SNAPSHOT_BIN to the XPR testnet snapshot .bin");
+        let avalanche_chain_id =
+            Id::from_str("c8c4a47932fc0a938972f48f32489e7e91f024697e498ceb3d3c3afcf28f68b6")
+                .unwrap();
+        let private_key =
+            PrivateKey::from_str("PVT_K1_5G7JEG7CWZkGfnaQePCcJSNgocGFoeCxG1pU7r1B6rY2gueez")?;
+        let genesis_bytes = generate_genesis(&private_key);
+        let temp_path = get_temp_dir();
+        let config_bytes = snapshot_node_config(&private_key, std::path::Path::new(&snapshot_path));
+
+        let started = std::time::Instant::now();
+        let mut controller = Controller::new();
+        controller.initialize(
+            &avalanche_chain_id,
+            &config_bytes,
+            &genesis_bytes,
+            temp_path.path().to_str().unwrap(),
+        )?;
+        eprintln!("boot from real snapshot took {:?}", started.elapsed());
+
+        // The getInfo-equivalent facts.
+        assert_eq!(controller.last_accepted_block().block_num(), 390401414);
+        assert_eq!(
+            controller.chain_id().to_string(),
+            "71ee83bcf52142d61019d95f9cc5427ba6a0d7ff8accd9e2088ae2abeaf3d3dd"
+        );
+        assert_eq!(controller.database().revision(), 390401414);
+        assert!(
+            controller
+                .database()
+                .arena_account_exists(Name::from_str("protonnz")?.as_u64())
+        );
+
+        // The anchor id must reproduce the REAL head block id from the
+        // snapshot's block_header_state — byte-for-byte source continuity.
+        let bytes = std::fs::read(&snapshot_path).expect("read snapshot file");
+        let real_head = pulsevm_snapshot::SnapshotReader::new(&bytes)
+            .expect("parse container")
+            .block_header_state()
+            .expect("head block_header_state");
+        assert_eq!(
+            controller.last_accepted_block().id()?,
+            Id::new(real_head.id.0),
+            "anchor id diverged from the source head block id"
+        );
+        assert_eq!(
+            controller.last_accepted_block().timestamp().slot(),
+            real_head.header.timestamp.slot()
+        );
+
+        // Optional: a real migrated-key push (needs key material we don't
+        // commit). The transfer runs the deployed eosio.token wasm and rolls
+        // back (push_transaction never commits).
+        let (Ok(account), Ok(key)) = (
+            std::env::var("PULSEVM_IMPORT_TEST_ACCOUNT"),
+            std::env::var("PULSEVM_IMPORT_TEST_KEY"),
+        ) else {
+            eprintln!(
+                "skipping signed push: set PULSEVM_IMPORT_TEST_ACCOUNT and PULSEVM_IMPORT_TEST_KEY"
+            );
+            return Ok(());
+        };
+        let account = Name::from_str(&account)?;
+        let key = PrivateKey::from_str(&key)?;
+        let ts = *controller.last_accepted_block().timestamp();
+        // XPR's chain config caps transaction lifetime (3600s), so expire
+        // shortly after the snapshot head time rather than at maximum.
+        let expiration =
+            TimePointSec::new(ts.to_time_point().sec_since_epoch().saturating_add(1800));
+        let chain_id = *controller.chain_id();
+        let trx = Transaction::new(
+            TransactionHeader::new(expiration, 0, 0, 0u32.into(), 0, 0u32.into()),
+            vec![],
+            vec![Action::new(
+                Name::from_str("eosio.token")?,
+                Name::from_str("transfer")?,
+                Transfer {
+                    from: account,
+                    to: Name::from_str("eosio")?,
+                    quantity: Asset::from_str("0.0001 XPR").unwrap(),
+                    memo: "boot-from-snapshot proof".to_string(),
+                }
+                .pack()
+                .unwrap(),
+                vec![PermissionLevel::new(account.as_u64(), ACTIVE_NAME.as_u64())],
+            )],
+        )
+        .sign(&key, &chain_id)?;
+        let result = controller.push_transaction(
+            &PackedTransaction::from_signed_transaction(trx)?,
+            &ts,
+            &BlockStatus::Building,
+        )?;
+        eprintln!("signed transfer receipt: {:?}", result.trace.receipt.status);
+        assert_eq!(
+            result.trace.receipt.status,
+            crate::transaction::TransactionStatus::Executed
+        );
         Ok(())
     }
 }

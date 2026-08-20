@@ -35,6 +35,13 @@ pub use crate::{
         peek_header as peek_snapshot_header,
     },
 };
+// Re-export the snapshot-import surface `Database::import_snapshot` exposes, so
+// callers (the controller's boot path) never depend on the importer crates
+// directly.
+pub use pulsevm_snapshot_import::{
+    ImportError,
+    ImportReport,
+};
 // Re-export shared chain value types for the database facade's public API.
 pub use pulsevm_chain_types::{
     Authority,

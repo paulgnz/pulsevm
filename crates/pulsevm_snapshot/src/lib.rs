@@ -49,6 +49,7 @@ mod contract_tables;
 mod error;
 mod reader;
 mod rows;
+pub mod testing;
 mod types;
 
 pub use contract_tables::{

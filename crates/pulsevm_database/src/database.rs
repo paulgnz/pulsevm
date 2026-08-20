@@ -1432,22 +1432,57 @@ impl Database {
         self.backend.undo();
     }
 
-    /// The arena lives in memory behind an `Arc`, so there is nothing to close;
-    /// dropping the last handle releases it. Retained for the controller's
-    /// restart sequence.
-    pub fn close(&self) -> Result<(), ChainError> {
-        // Persist the committed arena to disk so the next open reloads it, matching
-        // chainbase's mapped `shared_memory.bin`. The directory may not exist yet
-        // for a never-opened default database, so create it first.
+    /// Checkpoint the committed arena to the on-disk state file so the next
+    /// open reloads it, matching chainbase's mapped `shared_memory.bin`. The
+    /// directory may not exist yet for a never-opened default database, so it
+    /// is created first. A no-op for a pathless (default) database.
+    pub fn persist(&self) -> Result<(), ChainError> {
         if self.path.is_empty() {
             return Ok(());
         }
         let dir = Path::new(&self.path);
-        fs::create_dir_all(dir)
-            .map_err(|e| ChainError::InternalError(format!("close: create {}: {e}", self.path)))?;
+        fs::create_dir_all(dir).map_err(|e| {
+            ChainError::InternalError(format!("persist: create {}: {e}", self.path))
+        })?;
         self.backend
             .checkpoint(&dir.join(ARENA_STATE_FILE))
-            .map_err(|e| ChainError::InternalError(format!("close: checkpoint: {e:?}")))
+            .map_err(|e| ChainError::InternalError(format!("persist: checkpoint: {e:?}")))
+    }
+
+    /// The arena lives in memory behind an `Arc`, so there is nothing to close;
+    /// dropping the last handle releases it. Retained for the controller's
+    /// restart sequence, which relies on the persist for durability.
+    pub fn close(&self) -> Result<(), ChainError> {
+        self.persist()
+    }
+
+    /// Boot-from-snapshot entry point: read an Antelope portable chainstate
+    /// snapshot (a nodeos `create_snapshot` `.bin`), import its full
+    /// chainstate into the arena, and pin the database revision to the
+    /// snapshot's head block number (the arena's revision == block height by
+    /// design, so state and height stay one fact).
+    ///
+    /// The write path is `pulsevm_snapshot_import::import_chainstate`, which
+    /// hydrates through the same canonical layouts genesis uses and is
+    /// idempotent — re-running an interrupted import completes it. Persistence
+    /// is the caller's move (via [`Database::persist`]) once the rest of the
+    /// imported identity (the block-log anchor) exists on disk.
+    pub fn import_snapshot(
+        &mut self,
+        path: &Path,
+    ) -> Result<pulsevm_snapshot_import::ImportReport, ChainError> {
+        let bytes = fs::read(path).map_err(|e| {
+            ChainError::InternalError(format!("snapshot read {}: {e}", path.display()))
+        })?;
+        let snapshot = pulsevm_snapshot::SnapshotReader::new(&bytes).map_err(|e| {
+            ChainError::InternalError(format!("snapshot parse {}: {e}", path.display()))
+        })?;
+        let report =
+            pulsevm_snapshot_import::import_chainstate(&self.backend, &snapshot).map_err(|e| {
+                ChainError::InternalError(format!("snapshot import {}: {e}", path.display()))
+            })?;
+        self.set_revision(report.head_block_num as i64)?;
+        Ok(report)
     }
 
     /// Capture a snapshot of the committed arena state, wrapped in the transport
