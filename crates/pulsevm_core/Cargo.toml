@@ -51,6 +51,9 @@ arena-shadow = []
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 proptest = "1"
+# The boot-from-snapshot tests build synthetic snapshot fixtures
+# (pulsevm_snapshot::testing) and cross-check the real-snapshot anchor.
+pulsevm_snapshot = { path = "../pulsevm_snapshot" }
 wat = "1"
 
 [[bench]]
