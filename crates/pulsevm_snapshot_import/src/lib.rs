@@ -135,6 +135,38 @@ pub fn import_chainstate(
     db: &ChainDatabase,
     snapshot: &SnapshotReader,
 ) -> Result<ImportReport, ImportError> {
+    import_chainstate_scaled(db, snapshot, 1)
+}
+
+/// [`import_chainstate`] with a CPU unit conversion.
+///
+/// The source chain denominates its CPU budgets in microseconds of wall
+/// clock; this VM meters execution in deterministic points, and a point is
+/// much finer than a microsecond. Imported byte-for-byte, the source's
+/// consensus CPU config (e.g. XPR's 150000-µs per-transaction cap) reads as
+/// a 150000-POINT cap that not even a token transfer fits inside.
+/// `cpu_scale` is the points-per-microsecond conversion applied to the
+/// CPU-denominated consensus config at import time:
+///
+/// - chain config: `max_block_cpu_usage`, `max_transaction_cpu_usage`, `min_transaction_cpu_usage`
+///   (saturating at the fields' u32 range),
+/// - the elastic CPU limit parameters' `target` and `max`,
+/// - the resource-limits state's `virtual_cpu_limit` and `pending_cpu_usage`.
+///
+/// Percentages, NET fields and weights are unit-free or byte-denominated and
+/// are untouched. Historical usage accumulators are also left as-is: they
+/// decay within the averaging window, so an under-counted history briefly
+/// overstates headroom and then corrects itself — preferable to rewriting
+/// per-account rows the golden-fingerprint verification pins byte-exactly.
+///
+/// `cpu_scale == 1` is exactly [`import_chainstate`]. Like the snapshot
+/// itself, the scale is part of the imported chain's identity: every
+/// validator of the new chain must import with the same value.
+pub fn import_chainstate_scaled(
+    db: &ChainDatabase,
+    snapshot: &SnapshotReader,
+    cpu_scale: u64,
+) -> Result<ImportReport, ImportError> {
     let mut report = ImportReport::default();
 
     let head = snapshot.block_header_state()?;
@@ -144,10 +176,16 @@ pub fn import_chainstate(
 
     let gpo = snapshot.global_property()?;
     report.chain_id = gpo.chain_id;
-    import_global_property(db, &gpo)?;
+    if cpu_scale != 1 {
+        info!(
+            "scaling imported CPU-denominated consensus config by {} points/µs",
+            cpu_scale
+        );
+    }
+    import_global_property(db, &gpo, cpu_scale)?;
     import_dynamic_global_property(db, &snapshot.dynamic_global_property()?)?;
-    import_resource_limits_config(db, &snapshot.resource_limits_config()?)?;
-    import_resource_limits_state(db, &snapshot.resource_limits_state()?)?;
+    import_resource_limits_config(db, &snapshot.resource_limits_config()?, cpu_scale)?;
+    import_resource_limits_state(db, &snapshot.resource_limits_state()?, cpu_scale)?;
 
     report.accounts = import_accounts(db, snapshot.accounts()?)?;
     report.account_metadata = import_account_metadata(db, snapshot.account_metadata()?)?;
@@ -185,13 +223,23 @@ pub fn import_chainstate(
     Ok(report)
 }
 
+/// Multiply a µs-denominated u32 config field into points, saturating at the
+/// field's range.
+fn scale_cpu_u32(value: u32, cpu_scale: u64) -> u32 {
+    (value as u64)
+        .saturating_mul(cpu_scale)
+        .min(u32::MAX as u64) as u32
+}
+
 /// Writes the global property (chain config) singleton. The snapshot's
 /// `deferred_trx_expiration_window` and `max_action_return_value_size` are not
 /// tracked by the arena's `chain_config` and are dropped, exactly as the
-/// `setparams` path drops them.
+/// `setparams` path drops them. `cpu_scale` converts the µs-denominated CPU
+/// fields into metering points (see [`import_chainstate_scaled`]); 1 = as-is.
 pub fn import_global_property(
     db: &ChainDatabase,
     gpo: &GlobalPropertyRow,
+    cpu_scale: u64,
 ) -> Result<(), ImportError> {
     let c = &gpo.configuration.base;
     db.set_global_properties(ChainConfigParams {
@@ -202,10 +250,10 @@ pub fn import_global_property(
         net_usage_leeway: c.net_usage_leeway,
         context_free_discount_net_usage_num: c.context_free_discount_net_usage_num,
         context_free_discount_net_usage_den: c.context_free_discount_net_usage_den,
-        max_block_cpu_usage: c.max_block_cpu_usage,
+        max_block_cpu_usage: scale_cpu_u32(c.max_block_cpu_usage, cpu_scale),
         target_block_cpu_usage_pct: c.target_block_cpu_usage_pct,
-        max_transaction_cpu_usage: c.max_transaction_cpu_usage,
-        min_transaction_cpu_usage: c.min_transaction_cpu_usage,
+        max_transaction_cpu_usage: scale_cpu_u32(c.max_transaction_cpu_usage, cpu_scale),
+        min_transaction_cpu_usage: scale_cpu_u32(c.min_transaction_cpu_usage, cpu_scale),
         max_transaction_lifetime: c.max_transaction_lifetime,
         max_transaction_delay: c.max_transaction_delay,
         max_inline_action_size: c.max_inline_action_size,
@@ -226,12 +274,18 @@ pub fn import_dynamic_global_property(
 
 /// Seeds the resource-limits config singleton (elastic cpu/net parameters and
 /// the account usage averaging windows) from the snapshot's committed config.
+/// `cpu_scale` converts the elastic CPU `target`/`max` from µs into metering
+/// points (see [`import_chainstate_scaled`]); 1 = as-is.
 pub fn import_resource_limits_config(
     db: &ChainDatabase,
     row: &ResourceLimitsConfigRow,
+    cpu_scale: u64,
 ) -> Result<(), ImportError> {
+    let mut cpu = elastic_params(&row.cpu_limit_parameters);
+    cpu.target = cpu.target.saturating_mul(cpu_scale);
+    cpu.max = cpu.max.saturating_mul(cpu_scale);
     db.seed_resource_config(
-        elastic_params(&row.cpu_limit_parameters),
+        cpu,
         elastic_params(&row.net_limit_parameters),
         row.account_cpu_usage_average_window,
         row.account_net_usage_average_window,
@@ -240,22 +294,25 @@ pub fn import_resource_limits_config(
 }
 
 /// Seeds the resource-limits state singleton: block-usage averages, pending
-/// usage, total weights and the elastic virtual limits.
+/// usage, total weights and the elastic virtual limits. `cpu_scale` converts
+/// `virtual_cpu_limit` and `pending_cpu_usage` from µs into metering points
+/// (see [`import_chainstate_scaled`]); 1 = as-is.
 pub fn import_resource_limits_state(
     db: &ChainDatabase,
     row: &ResourceLimitsStateRow,
+    cpu_scale: u64,
 ) -> Result<(), ImportError> {
     let mut bytes = Vec::with_capacity(96);
     put_acc(&mut bytes, &row.average_block_net_usage);
     put_acc(&mut bytes, &row.average_block_cpu_usage);
     for v in [
         row.pending_net_usage,
-        row.pending_cpu_usage,
+        row.pending_cpu_usage.saturating_mul(cpu_scale),
         row.total_net_weight,
         row.total_cpu_weight,
         row.total_ram_bytes,
         row.virtual_net_limit,
-        row.virtual_cpu_limit,
+        row.virtual_cpu_limit.saturating_mul(cpu_scale),
     ] {
         bytes.extend_from_slice(&v.to_le_bytes());
     }

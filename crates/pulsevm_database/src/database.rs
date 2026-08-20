@@ -1467,9 +1467,13 @@ impl Database {
     /// idempotent — re-running an interrupted import completes it. Persistence
     /// is the caller's move (via [`Database::persist`]) once the rest of the
     /// imported identity (the block-log anchor) exists on disk.
+    /// `cpu_scale` is the points-per-µs conversion applied to the imported
+    /// CPU-denominated consensus config (1 = import as-is); see
+    /// [`pulsevm_snapshot_import::import_chainstate_scaled`].
     pub fn import_snapshot(
         &mut self,
         path: &Path,
+        cpu_scale: u64,
     ) -> Result<pulsevm_snapshot_import::ImportReport, ChainError> {
         let bytes = fs::read(path).map_err(|e| {
             ChainError::InternalError(format!("snapshot read {}: {e}", path.display()))
@@ -1478,9 +1482,10 @@ impl Database {
             ChainError::InternalError(format!("snapshot parse {}: {e}", path.display()))
         })?;
         let report =
-            pulsevm_snapshot_import::import_chainstate(&self.backend, &snapshot).map_err(|e| {
-                ChainError::InternalError(format!("snapshot import {}: {e}", path.display()))
-            })?;
+            pulsevm_snapshot_import::import_chainstate_scaled(&self.backend, &snapshot, cpu_scale)
+                .map_err(|e| {
+                    ChainError::InternalError(format!("snapshot import {}: {e}", path.display()))
+                })?;
         self.set_revision(report.head_block_num as i64)?;
         Ok(report)
     }

@@ -42,6 +42,18 @@ pub struct NodeConfig {
     // cannot be re-pointed at a snapshot in place.
     #[serde(default)]
     pub snapshot_path: Option<PathBuf>,
+    // Boot-from-snapshot CPU unit conversion, in metering points per source
+    // microsecond. The source chain denominates its consensus CPU budgets in
+    // µs of wall clock; this VM meters in deterministic points, which are much
+    // finer — imported as-is, a cap like XPR's 150000 µs/transaction reads as
+    // 150000 POINTS, too small for even a token transfer. When set, the
+    // import multiplies the CPU-denominated consensus config (chain config
+    // CPU fields, elastic CPU parameters, virtual CPU limit) by this factor.
+    // Like `snapshot_path` itself, it is part of the imported chain's
+    // identity: every validator must boot with the same value. Unset = 1
+    // (import byte-for-byte). Only read at import time; ignored on resume.
+    #[serde(default)]
+    pub import_cpu_scale: Option<u64>,
 }
 
 fn default_db_size() -> u64 {
@@ -81,5 +93,18 @@ mod tests {
             config.snapshot_path,
             Some(PathBuf::from("/data/xpr-testnet.bin"))
         );
+        // Unset scale means import as-is.
+        assert_eq!(config.import_cpu_scale, None);
+    }
+
+    #[test]
+    fn import_cpu_scale_parses_when_set() {
+        let config: NodeConfig = serde_json::from_str(&format!(
+            r#"{{"producer_name": "pulse", "producer_key": "{KEY}",
+                 "snapshot_path": "/data/xpr-testnet.bin",
+                 "import_cpu_scale": 143}}"#
+        ))
+        .unwrap();
+        assert_eq!(config.import_cpu_scale, Some(143));
     }
 }
