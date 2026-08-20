@@ -1,0 +1,21 @@
+[package]
+name = "pulsevm_snapshot_import"
+version = "0.1.0"
+edition = "2024"
+
+# The state writer for Antelope portable chainstate snapshots: maps the typed
+# rows `pulsevm_snapshot` decodes onto the arena-backed chain database
+# (`pulsevm_chaindb`), section by section, through the same canonical
+# `hydrate_*` layouts the pure-Rust genesis uses. Decode stays in
+# `pulsevm_snapshot`; state layout stays in `pulsevm_chaindb`; this crate only
+# translates between them.
+
+[dependencies]
+pulsevm_chaindb = { path = "../pulsevm_chaindb" }
+pulsevm_crypto = { path = "../pulsevm_crypto" }
+pulsevm_snapshot = { path = "../pulsevm_snapshot" }
+spdlog-rs = "0.4"
+
+[dev-dependencies]
+pulsevm_chain_types = { path = "../pulsevm_chain_types" }
+pulsevm_name = { path = "../pulsevm_name" }
