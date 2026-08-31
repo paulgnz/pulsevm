@@ -446,6 +446,7 @@ pub fn import_permissions(
         bytes.extend_from_slice(&(cb_id as u64).to_le_bytes());
         bytes.extend_from_slice(&(parent as u64).to_le_bytes());
         bytes.extend_from_slice(&(row.last_used.time_since_epoch().count() as u64).to_le_bytes());
+        bytes.extend_from_slice(&(row.last_updated.time_since_epoch().count() as u64).to_le_bytes());
         bytes.extend_from_slice(&(auth.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&auth);
         stats.written += 1;

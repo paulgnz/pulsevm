@@ -6,7 +6,7 @@
 //! the file from `PULSEVM_SNAPSHOT_BIN`:
 //!
 //! ```sh
-//! PULSEVM_SNAPSHOT_BIN=~/snapshots/xpr-testnet-snapshot-2026-06-16.bin \
+//! PULSEVM_SNAPSHOT_BIN=~/snapshots/latest-snapshot-20260815.bin \
 //! cargo test -p pulsevm_snapshot_import --release -- --ignored --nocapture
 //! ```
 //!
@@ -41,33 +41,33 @@ fn imports_the_xpr_testnet_snapshot() {
 
     // Source-chain identity and head, for height continuity.
     assert_eq!(report.chain_id.to_string(), XPR_TESTNET_CHAIN_ID);
-    assert_eq!(report.head_block_num, 390401414);
+    assert_eq!(report.head_block_num, 400588707);
 
     // The counts the reader pinned, now written.
-    assert_eq!(report.accounts, 32333);
-    assert_eq!(report.account_metadata, 32333);
-    assert_eq!(report.code_objects, 599, "each sha256-verified on write");
+    assert_eq!(report.accounts, 32496);
+    assert_eq!(report.account_metadata, 32496);
+    assert_eq!(report.code_objects, 633, "each sha256-verified on write");
     assert_eq!(
         report.permissions.written + report.permissions.reserved_skipped,
-        65420
+        65769
     );
     assert_eq!(report.permissions.reserved_skipped, 1);
     assert_eq!(report.permissions.r1_keys_skipped, 6);
-    assert_eq!(report.permissions.webauthn_keys_skipped, 998);
-    assert_eq!(report.permissions.k1_keys, 63755);
-    assert_eq!(report.permission_links, 818);
-    assert_eq!(report.contract_tables.tables, 74588);
-    assert_eq!(report.contract_tables.key_values, 801374);
-    assert_eq!(report.contract_tables.idx64, 483579);
-    assert_eq!(report.contract_tables.idx128, 154605);
-    assert_eq!(report.contract_tables.idx256, 457480);
-    assert_eq!(report.contract_tables.idx_double, 132);
+    assert_eq!(report.permissions.webauthn_keys_skipped, 1016);
+    assert_eq!(report.permissions.k1_keys, 64088);
+    assert_eq!(report.permission_links, 862);
+    assert_eq!(report.contract_tables.tables, 75327);
+    assert_eq!(report.contract_tables.key_values, 822887);
+    assert_eq!(report.contract_tables.idx64, 479842);
+    assert_eq!(report.contract_tables.idx128, 194369);
+    assert_eq!(report.contract_tables.idx256, 457416);
+    assert_eq!(report.contract_tables.idx_double, 134);
     assert_eq!(report.contract_tables.idx_long_double, 0);
-    assert_eq!(report.resource_limits, 32333);
-    assert_eq!(report.resource_usage, 32333);
-    assert_eq!(report.transactions, 424);
+    assert_eq!(report.resource_limits, 32496);
+    assert_eq!(report.resource_usage, 32496);
+    assert_eq!(report.transactions, 784);
     assert_eq!(report.block_summaries_skipped, 65536);
-    assert_eq!(report.generated_transactions_skipped, 1);
+    assert_eq!(report.generated_transactions_skipped, 0);
     assert_eq!(report.ram_corrections_skipped, 0);
 
     // Spot checks straight off the arena — the state the node would serve.
@@ -119,7 +119,7 @@ fn imports_the_xpr_testnet_snapshot() {
     assert_eq!(again.accounts, report.accounts);
     assert_eq!(
         db.contract_table_state_bytes().len(),
-        74588 * 36,
+        75327 * 36,
         "re-import must not duplicate tables"
     );
 }

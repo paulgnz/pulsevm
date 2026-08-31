@@ -38,7 +38,7 @@ use pulsevm_snapshot::{
 use pulsevm_snapshot_import::import_chainstate;
 
 /// The committed golden roots for the frozen XPR testnet snapshot
-/// (`xpr-testnet-snapshot-2026-06-16.bin`, pinned by sha256 in
+/// (`latest-snapshot-20260815.bin`, pinned by sha256 in
 /// scripts/run-import-regression.sh).
 const DEFAULT_GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden_import_roots.txt");
 
@@ -197,7 +197,7 @@ fn derive_expected(snapshot: &SnapshotReader) -> Vec<(&'static str, Vec<u8>)> {
     // order is (owner, perm_name).
     let mut ids: HashMap<(u64, u64), u64> = HashMap::new();
     let mut next_id = 1u64;
-    let mut rows: Vec<(u64, u64, u64, u64, u64, Vec<u8>)> = Vec::new();
+    let mut rows: Vec<(u64, u64, u64, u64, u64, u64, Vec<u8>)> = Vec::new();
     for r in snapshot.permissions().unwrap() {
         let r = r.unwrap();
         let owner = r.owner.as_u64();
@@ -213,19 +213,21 @@ fn derive_expected(snapshot: &SnapshotReader) -> Vec<(&'static str, Vec<u8>)> {
             p => ids[&(owner, p)],
         };
         let last_used = r.last_used.time_since_epoch().count() as u64;
+        let last_updated = r.last_updated.time_since_epoch().count() as u64;
         rows.push((
             owner,
             name,
             id,
             parent,
             last_used,
+            last_updated,
             expected_auth_blob(&r.auth),
         ));
     }
     rows.sort_by_key(|r| (r.0, r.1));
     let mut bytes = Vec::new();
-    for (owner, name, id, parent, last_used, auth) in &rows {
-        for v in [owner, name, id, parent, last_used] {
+    for (owner, name, id, parent, last_used, last_updated, auth) in &rows {
+        for v in [owner, name, id, parent, last_used, last_updated] {
             bytes.extend_from_slice(&v.to_le_bytes());
         }
         bytes.extend_from_slice(&(auth.len() as u32).to_le_bytes());

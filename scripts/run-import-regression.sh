@@ -15,7 +15,7 @@
 # file together when the fixture changes.
 set -euo pipefail
 
-readonly EXPECTED_SNAPSHOT_SHA256="a70eb56ed71117b3a8052066303091c3307d8d1a3d3a533df570c8e473874996"
+readonly EXPECTED_SNAPSHOT_SHA256="d2e3e6071edfa93ec4777aeb817ff63c76ae40a76ec6e1ca755f252c54b026d7"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SNAPSHOT="${1:-${PULSEVM_SNAPSHOT_BIN:-}}"

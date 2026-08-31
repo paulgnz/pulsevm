@@ -1936,7 +1936,7 @@ impl ChainDatabase {
 
     /// Canonical serialization of the whole permission table in (owner, perm_name)
     /// order, matching `Database::permission_state_bytes`: per row owner u64 LE,
-    /// perm_name u64 LE, cb_id u64 LE, parent id u64 LE, last_used u64 LE, then a
+    /// perm_name u64 LE, cb_id u64 LE, parent id u64 LE, last_used u64 LE, last_updated u64 LE, then a
     /// u32 LE length-prefixed authority blob (the arena stores the auth already in
     /// the shared encode form). The reserved perm 0 (owner 0) is skipped. `cb_id`
     /// and `parent` are chainbase ids the database stores verbatim, so they compare
@@ -1944,7 +1944,7 @@ impl ChainDatabase {
     /// permission-tree walk needs.
     pub fn permission_state_bytes(&self) -> Vec<u8> {
         let db = self.lock();
-        let mut refs: Vec<(u64, u64, i64, i64, i64, BlobRef)> = match db.table::<PermissionRow>() {
+        let mut refs: Vec<(u64, u64, i64, i64, i64, i64, BlobRef)> = match db.table::<PermissionRow>() {
             Ok(t) => t
                 .iter()
                 .filter(|p| p.owner != 0)
@@ -1956,19 +1956,20 @@ impl ChainDatabase {
                         .flatten()
                         .map(|u| u.last_used)
                         .unwrap_or(0);
-                    (p.owner, p.perm_name, p.cb_id, p.parent, last_used, p.auth)
+                    (p.owner, p.perm_name, p.cb_id, p.parent, last_used, p.last_updated, p.auth)
                 })
                 .collect(),
             Err(_) => return Vec::new(),
         };
         refs.sort_by_key(|r| (r.0, r.1));
         let mut out = Vec::new();
-        for (owner, perm_name, cb_id, parent, last_used, auth_ref) in refs {
+        for (owner, perm_name, cb_id, parent, last_used, last_updated, auth_ref) in refs {
             out.extend_from_slice(&owner.to_le_bytes());
             out.extend_from_slice(&perm_name.to_le_bytes());
             out.extend_from_slice(&(cb_id as u64).to_le_bytes());
             out.extend_from_slice(&(parent as u64).to_le_bytes());
             out.extend_from_slice(&(last_used as u64).to_le_bytes());
+            out.extend_from_slice(&(last_updated as u64).to_le_bytes());
             let auth = db.blob::<PermissionRow>(auth_ref).unwrap_or(&[]);
             out.extend_from_slice(&(auth.len() as u32).to_le_bytes());
             out.extend_from_slice(auth);
@@ -1979,21 +1980,23 @@ impl ChainDatabase {
     /// Seeds permission rows (and their linked usage rows) from the canonical
     /// layout — genesis counterpart to `hydrate_accounts`, since
     /// `create_native_account` and the genesis block make several permissions in
-    /// C++. last_updated/last_used are not part of the canonical form, so they
-    /// are left at zero. A `(owner, perm_name)` already present is left untouched.
+    /// C++. Both last_used and last_updated are carried in the canonical form
+    /// (SHiP- and get_account-visible). A `(owner, perm_name)` already present is left untouched.
     pub fn hydrate_permissions(&self, bytes: &[u8]) -> Result<(), DbError> {
         let mut db = self.lock();
         let mut pos = 0usize;
-        while pos + 44 <= bytes.len() {
+        while pos + 52 <= bytes.len() {
             let owner = u64::from_le_bytes(bytes[pos..pos + 8].try_into().unwrap());
             let perm_name = u64::from_le_bytes(bytes[pos + 8..pos + 16].try_into().unwrap());
             let cb_id = u64::from_le_bytes(bytes[pos + 16..pos + 24].try_into().unwrap()) as i64;
             let parent = u64::from_le_bytes(bytes[pos + 24..pos + 32].try_into().unwrap()) as i64;
             let last_used =
                 u64::from_le_bytes(bytes[pos + 32..pos + 40].try_into().unwrap()) as i64;
+            let last_updated =
+                u64::from_le_bytes(bytes[pos + 40..pos + 48].try_into().unwrap()) as i64;
             let auth_len =
-                u32::from_le_bytes(bytes[pos + 40..pos + 44].try_into().unwrap()) as usize;
-            pos += 44;
+                u32::from_le_bytes(bytes[pos + 48..pos + 52].try_into().unwrap()) as usize;
+            pos += 52;
             if pos + auth_len > bytes.len() {
                 break;
             }
@@ -2016,7 +2019,7 @@ impl ChainDatabase {
                 p.parent = parent;
                 p.owner = owner;
                 p.perm_name = perm_name;
-                p.last_updated = 0;
+                p.last_updated = last_updated;
                 p.auth = blob;
             })?;
         }
