@@ -786,6 +786,15 @@ impl Controller {
             // revision > 0 and takes the ordinary resume path instead of
             // re-importing. A crash before this point re-runs the import,
             // which is idempotent.
+            //
+            // The import anchors the block log above genesis, and the resume
+            // path (rightly) refuses a re-based log without its synced schedule
+            // base — so persist the schedule in force at the anchor beside the
+            // logs, exactly as a state-synced node does.
+            let packed_schedule = self.active_schedule.pack().map_err(|e| {
+                ChainError::InternalError(format!("import: pack schedule: {e}"))
+            })?;
+            self.write_synced_schedule(&packed_schedule)?;
             self.db.persist()?;
         }
 
