@@ -664,6 +664,7 @@ impl Controller {
                 .max(1);
             let report = self.db.import_snapshot(snapshot_path, cpu_scale)?;
             self.adopt_imported_head(&report)?;
+            self.apply_snapshot_debug_authorities()?;
             imported_from_snapshot = true;
         } else if revision <= 0 {
             // Initialize the database with the genesis state
@@ -2321,6 +2322,43 @@ impl Controller {
                 marker.display()
             ))),
         }
+    }
+
+    /// DISPOSABLE-CHAIN TESTING ONLY: apply `snapshot_debug_authorities` from
+    /// the node config — replace each listed permission's authority with a
+    /// single configured key so an imported copy of a real chain can be
+    /// exercised without any real key. Logged loudly; the resulting state no
+    /// longer mirrors the source chain.
+    fn apply_snapshot_debug_authorities(&mut self) -> Result<(), ChainError> {
+        let overrides = self
+            .node_config
+            .as_ref()
+            .map(|c| c.snapshot_debug_authorities.clone())
+            .unwrap_or_default();
+        if overrides.is_empty() {
+            return Ok(());
+        }
+        let now = TimePoint::now();
+        for o in &overrides {
+            let key: pulsevm_crypto::AuthorityPublicKey = o.key.parse().map_err(|e| {
+                ChainError::InternalError(format!(
+                    "snapshot_debug_authorities: bad key for {}@{}: {e}",
+                    o.account, o.permission
+                ))
+            })?;
+            let authority = Authority::new_from_public_key(key);
+            self.db.modify_permission(
+                o.account.as_u64(),
+                o.permission.as_u64(),
+                &authority,
+                &now,
+            )?;
+            warn!(
+                "snapshot_debug_authorities: REPLACED {}@{} with a single test key {} — this chain no longer mirrors its source",
+                o.account, o.permission, o.key
+            );
+        }
+        Ok(())
     }
 
     /// Adopt an imported snapshot's head as this chain's last accepted block —
