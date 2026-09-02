@@ -2425,18 +2425,6 @@ impl Controller {
         content.trim().parse().ok()
     }
 
-    fn write_synced_schedule(&self, schedule: &ProducerSchedule) -> Result<(), ChainError> {
-        let dir = self
-            .db_path
-            .as_ref()
-            .ok_or_else(|| ChainError::InternalError("accept: no db path".into()))?;
-        let packed = schedule
-            .pack()
-            .map_err(|e| ChainError::InternalError(format!("accept: pack schedule: {}", e)))?;
-        std::fs::write(std::path::Path::new(dir).join(SYNCED_SCHEDULE_FILE), packed)
-            .map_err(|e| ChainError::InternalError(format!("accept: write schedule: {}", e)))
-    }
-
     fn begin_state_sync_install(&self, block_height: u32, block_id: &Id) -> Result<(), ChainError> {
         let dir = Path::new(
             self.db_path
