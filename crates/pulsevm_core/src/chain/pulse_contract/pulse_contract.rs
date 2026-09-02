@@ -13,6 +13,7 @@ use pulsevm_serialization::Read;
 use crate::{
     ACTIVE_NAME,
     CODE_NAME,
+    EOSIO_CODE_NAME,
     OWNER_NAME,
     chain::{
         abi::AbiDefinition,
@@ -465,7 +466,7 @@ fn validate_authority_precondition(db: &mut Database, auth: &Authority) -> Resul
             continue; // account was already checked to exist, so its owner and active permissions should exist
         }
 
-        if a.permission.permission == CODE_NAME {
+        if a.permission.permission == CODE_NAME || a.permission.permission == EOSIO_CODE_NAME {
             continue; // virtual pulse.code permission does not really exist but is allowed
         }
 

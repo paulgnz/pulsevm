@@ -59,5 +59,11 @@ pub const ACTIVE_NAME: Name = Name::new(name!("active"));
 pub const ANY_NAME: Name = Name::new(name!("pulse.any"));
 pub const CODE_NAME: Name = Name::new(name!("pulse.code"));
 pub const PRODS_NAME: Name = Name::new(name!("pulse.prods"));
+// Interim eosio-compat aliases for imported Antelope chains whose system account is
+// `eosio` (native handlers + the virtual any/code permissions). Superseded by the
+// configurable system account in upstream PR #63 once it merges.
+pub const EOSIO_NAME: Name = Name::new(name!("eosio"));
+pub const EOSIO_ANY_NAME: Name = Name::new(name!("eosio.any"));
+pub const EOSIO_CODE_NAME: Name = Name::new(name!("eosio.code"));
 pub const MAJORITY_PRODUCERS_PERMISSION_NAME: Name = Name::new(name!("prod.major"));
 pub const MINORITY_PRODUCERS_PERMISSION_NAME: Name = Name::new(name!("prod.minor"));
