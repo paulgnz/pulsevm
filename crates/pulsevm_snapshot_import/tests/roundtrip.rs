@@ -937,3 +937,46 @@ fn cpu_scale_converts_the_cpu_denominated_config_only() {
         d2.chain_config_params().unwrap().max_block_cpu_usage
     });
 }
+
+#[test]
+fn burn_keys_are_carried_verbatim_and_counted() {
+    // Real chains hold deliberately invalid keys (the all-zero EOS1111… burn key,
+    // e.g. XPR mainnet certburn@owner). They must import byte-for-byte, not fail.
+    let d = db();
+    let rows = vec![
+        PermissionRow {
+            parent: Name::default(),
+            owner: Name::default(),
+            name: Name::default(),
+            last_updated: tp(0),
+            last_used: tp(0),
+            auth: auth(0, vec![]),
+        },
+        PermissionRow {
+            parent: Name::default(),
+            owner: name("certburn"),
+            name: name("owner"),
+            last_updated: tp(1),
+            last_used: tp(1),
+            auth: auth(
+                1,
+                vec![SnapshotKeyWeight {
+                    key: SnapshotPublicKey::K1([0u8; 33]),
+                    weight: 1,
+                }],
+            ),
+        },
+    ];
+    let stats = import_permissions(&d, ok(rows)).unwrap();
+    assert_eq!(stats.written, 1);
+    assert_eq!(stats.k1_keys, 1);
+    assert_eq!(stats.non_canonical_keys, 1);
+    let mut packed = vec![0u8];
+    packed.extend_from_slice(&[0u8; 33]);
+    let expected = auth_blob(1, &[(packed, 1)], &[], &[]);
+    assert_eq!(
+        d.permission_auth_blob(name("certburn").as_u64(), name("owner").as_u64())
+            .unwrap(),
+        expected
+    );
+}
