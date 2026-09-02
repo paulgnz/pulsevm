@@ -22,12 +22,16 @@
 //! - account RAM corrections,
 //! - activated protocol features (no feature-activation framework upstream).
 //!
-//! Key support: K1, R1 and WebAuthn keys are all carried. Each key is packed
-//! through `pulsevm_crypto::AuthorityPublicKey::to_packed` (the canonical
-//! Antelope tagged form the authority checker reads back), so imported
+//! Key support: K1, R1 and WebAuthn keys are all carried, packed in the
+//! canonical Antelope tagged form the authority checker reads back (the same
+//! bytes `pulsevm_crypto::AuthorityPublicKey::to_packed` produces), so imported
 //! authorities verify against the same signatures they accepted on the source
-//! chain. A key that fails canonical validation is an import error, never a
-//! silent drop.
+//! chain. The bytes are carried VERBATIM, without curve validation: real chains
+//! deliberately hold keys that are not valid points (burn accounts with the
+//! all-zero `EOS1111…` key, e.g. XPR mainnet `certburn@owner`), and nodeos
+//! stores them as opaque bytes. Such keys are counted (`non_canonical_keys`)
+//! and logged; the permission simply cannot be satisfied by signature, exactly
+//! as on the source chain.
 
 use pulsevm_chaindb::{
     ChainConfigParams,
@@ -62,6 +66,7 @@ use pulsevm_snapshot::{
 };
 use spdlog::{
     info,
+    warn,
 };
 
 mod error;
@@ -113,6 +118,9 @@ pub struct PermissionImportStats {
     pub r1_keys: u64,
     /// WebAuthn keys carried into authority blobs.
     pub webauthn_keys: u64,
+    /// Keys carried verbatim that are not canonical curve points / WebAuthn
+    /// tuples (burn keys and the like) — present on the source chain too.
+    pub non_canonical_keys: u64,
 }
 
 /// Contract-tables-section outcome: the table rows plus every index family.
@@ -415,6 +423,7 @@ pub fn import_permissions(
     rows: impl Iterator<Item = Result<PermissionRow, SnapshotError>>,
 ) -> Result<PermissionImportStats, ImportError> {
     let mut stats = PermissionImportStats::default();
+    let mut first_non_canonical: Option<String> = None;
     let mut bytes = Vec::new();
     let mut ids = std::collections::HashMap::<(u64, u64), i64>::new();
     let mut next_id = 1i64;
@@ -440,13 +449,7 @@ pub fn import_permissions(
                 }
             })?,
         };
-        let auth = encode_authority(&row.auth, &mut stats).map_err(|reason| {
-            ImportError::InvalidAuthorityKey {
-                owner: row.owner.to_string(),
-                name: row.name.to_string(),
-                reason,
-            }
-        })?;
+        let auth = encode_authority(&row.auth, &mut stats, &mut first_non_canonical, &row);
         bytes.extend_from_slice(&owner.to_le_bytes());
         bytes.extend_from_slice(&name.to_le_bytes());
         bytes.extend_from_slice(&(cb_id as u64).to_le_bytes());
@@ -458,6 +461,13 @@ pub fn import_permissions(
         stats.written += 1;
     }
     db.hydrate_permissions(&bytes)?;
+    if stats.non_canonical_keys > 0 {
+        warn!(
+            "snapshot import carried {} authority key(s) that are not canonical curve points (first: {}) — stored verbatim as on the source chain; those permissions cannot be satisfied by signature",
+            stats.non_canonical_keys,
+            first_non_canonical.as_deref().unwrap_or("?"),
+        );
+    }
     Ok(stats)
 }
 
@@ -628,32 +638,63 @@ pub fn import_transactions(
 }
 
 /// Encodes a snapshot authority in the arena's `shared_authority` blob layout,
-/// carrying every key type (K1, R1, WebAuthn) in the canonical packed form
-/// `AuthorityPublicKey::to_packed` produces — the same bytes the authority
-/// checker parses back with `from_packed`. Accounts and waits are carried in
-/// full. Returns the validation reason if a key is not a canonical point.
+/// carrying every key type (K1, R1, WebAuthn) in the canonical packed form the
+/// authority checker parses back (`AuthorityPublicKey::from_packed`): a type
+/// tag byte, the 33-byte point, and for WebAuthn the user-presence byte plus a
+/// varuint-length RP ID. Bytes are copied verbatim — never validated or
+/// dropped — because the source chain stores them that way too (see the module
+/// docs on burn keys). Keys that fail canonical validation are only counted.
 fn encode_authority(
     auth: &SnapshotAuthority,
     stats: &mut PermissionImportStats,
-) -> Result<Vec<u8>, String> {
-    let mut packed_keys: Vec<(Vec<u8>, u16)> = Vec::with_capacity(auth.keys.len());
-    for kw in &auth.keys {
-        match kw.key {
-            SnapshotPublicKey::K1(_) => stats.k1_keys += 1,
-            SnapshotPublicKey::R1(_) => stats.r1_keys += 1,
-            SnapshotPublicKey::WebAuthn(_) => stats.webauthn_keys += 1,
-        }
-        let key = AuthorityPublicKey::try_from(&kw.key).map_err(|e| e.to_string())?;
-        packed_keys.push((key.to_packed(), kw.weight));
-    }
-
+    first_non_canonical: &mut Option<String>,
+    row: &PermissionRow,
+) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&auth.threshold.to_le_bytes());
-    out.extend_from_slice(&(packed_keys.len() as u32).to_le_bytes());
-    for (packed, weight) in packed_keys {
+    out.extend_from_slice(&(auth.keys.len() as u32).to_le_bytes());
+    for kw in &auth.keys {
+        let mut packed = Vec::with_capacity(64);
+        match &kw.key {
+            SnapshotPublicKey::K1(point) => {
+                stats.k1_keys += 1;
+                packed.push(0);
+                packed.extend_from_slice(point);
+            }
+            SnapshotPublicKey::R1(point) => {
+                stats.r1_keys += 1;
+                packed.push(1);
+                packed.extend_from_slice(point);
+            }
+            SnapshotPublicKey::WebAuthn(w) => {
+                stats.webauthn_keys += 1;
+                packed.push(2);
+                packed.extend_from_slice(&w.key);
+                packed.push(w.user_presence);
+                let mut len = w.rpid.len() as u64;
+                loop {
+                    let mut b = (len & 0x7f) as u8;
+                    len >>= 7;
+                    if len != 0 {
+                        b |= 0x80;
+                    }
+                    packed.push(b);
+                    if len == 0 {
+                        break;
+                    }
+                }
+                packed.extend_from_slice(w.rpid.as_bytes());
+            }
+        }
+        if AuthorityPublicKey::try_from(&kw.key).is_err() {
+            stats.non_canonical_keys += 1;
+            if first_non_canonical.is_none() {
+                *first_non_canonical = Some(format!("{}@{}", row.owner, row.name));
+            }
+        }
         out.extend_from_slice(&(packed.len() as u32).to_le_bytes());
         out.extend_from_slice(&packed);
-        out.extend_from_slice(&weight.to_le_bytes());
+        out.extend_from_slice(&kw.weight.to_le_bytes());
     }
     out.extend_from_slice(&(auth.accounts.len() as u32).to_le_bytes());
     for a in &auth.accounts {
@@ -666,7 +707,7 @@ fn encode_authority(
         out.extend_from_slice(&w.wait_sec.to_le_bytes());
         out.extend_from_slice(&w.weight.to_le_bytes());
     }
-    Ok(out)
+    out
 }
 
 /// Maps the snapshot's elastic limit parameters onto the arena's.

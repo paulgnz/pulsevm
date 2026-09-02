@@ -23,13 +23,6 @@ pub enum ImportError {
         name: String,
         parent: String,
     },
-    /// An authority key is not a canonical public key of its declared type
-    /// (or a WebAuthn key carries an invalid presence policy / RP ID).
-    InvalidAuthorityKey {
-        owner: String,
-        name: String,
-        reason: String,
-    },
 }
 
 impl fmt::Display for ImportError {
@@ -49,11 +42,7 @@ impl fmt::Display for ImportError {
                 f,
                 "permission {owner}@{name} references parent '{parent}' before it was defined"
             ),
-            ImportError::InvalidAuthorityKey {
-                owner,
-                name,
-                reason,
-            } => write!(f, "permission {owner}@{name} carries an invalid key: {reason}"),
+
         }
     }
 }
