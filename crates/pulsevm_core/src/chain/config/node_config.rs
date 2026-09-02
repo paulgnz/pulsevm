@@ -54,6 +54,24 @@ pub struct NodeConfig {
     // (import byte-for-byte). Only read at import time; ignored on resume.
     #[serde(default)]
     pub import_cpu_scale: Option<u64>,
+    // DISPOSABLE-CHAIN TESTING ONLY. After a snapshot import, replace the
+    // authority of each listed permission with a single key (threshold 1).
+    // This lets an imported copy of a real chain be exercised without holding
+    // any real key: the injected key exists nowhere on the source chain, so
+    // signatures made with it are worthless there. It changes state relative
+    // to the source, so it must never be set on a chain meant to mirror one.
+    // Applied once, at import; ignored on resume.
+    #[serde(default)]
+    pub snapshot_debug_authorities: Vec<DebugAuthority>,
+}
+
+/// One import-time authority override (see `snapshot_debug_authorities`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct DebugAuthority {
+    pub account: Name,
+    pub permission: Name,
+    /// Public key in Antelope text form (`PUB_K1_…`, `PUB_R1_…`, `EOS…`).
+    pub key: String,
 }
 
 fn default_db_size() -> u64 {
