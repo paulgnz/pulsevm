@@ -2303,6 +2303,8 @@ impl Controller {
                 marker.display()
             ))),
         }
+    }
+
     /// Adopt an imported snapshot's head as this chain's last accepted block —
     /// the anchor every later block builds on — and take over the source
     /// chain's identity.
