@@ -13,6 +13,8 @@ use pulsevm_database::{
 use pulsevm_error::ChainError;
 
 use crate::{
+    EOSIO_ANY_NAME,
+    EOSIO_NAME,
     PULSE_NAME,
     chain::{
         name::Name,
@@ -75,7 +77,7 @@ impl AuthorizationManager {
         for act in actions.iter() {
             let mut special_case = false;
 
-            if act.account().as_u64() == PULSE_NAME {
+            if act.account().as_u64() == PULSE_NAME || act.account().as_u64() == EOSIO_NAME {
                 special_case = true;
 
                 match *act.name() {
@@ -312,7 +314,7 @@ impl AuthorizationManager {
             auth.actor == link.account,
             ChainError::AuthorizationError("the owner of the linked permission needs to be the actor of the declared authorization".to_string()),
         )?;
-        if link.code == PULSE_NAME {
+        if link.code == PULSE_NAME || link.code == EOSIO_NAME {
             match link.message_type {
                 UPDATEAUTH_NAME => {
                     return Err(ChainError::AuthorizationError(
@@ -396,7 +398,7 @@ impl AuthorizationManager {
                     unlink.account, unlink.code, unlink.message_type
                 )));
             }
-            Some(name) if name == ANY_NAME => {
+            Some(name) if name == ANY_NAME || name == EOSIO_ANY_NAME => {
                 return Ok(());
             }
             Some(unlinked_permission_name) => {
@@ -459,7 +461,7 @@ impl AuthorizationManager {
     ) -> Result<Option<Name>, ChainError> {
         // Special case native actions cannot be linked to a minimum permission, so there is no need
         // to check.
-        if scope.as_u64() == PULSE_NAME {
+        if scope.as_u64() == PULSE_NAME || scope.as_u64() == EOSIO_NAME {
             pulse_assert(
                 act_name.as_u64() != UPDATEAUTH_NAME
                     && act_name.as_u64() != DELETEAUTH_NAME
@@ -475,7 +477,7 @@ impl AuthorizationManager {
             Self::lookup_linked_permission(db, authorizer_account, scope, act_name)?;
 
         if let Some(linked_permission) = linked_permission {
-            if linked_permission == ANY_NAME {
+            if linked_permission == ANY_NAME || linked_permission == EOSIO_ANY_NAME {
                 return Ok(None);
             }
 

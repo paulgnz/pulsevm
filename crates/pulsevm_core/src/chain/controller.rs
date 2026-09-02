@@ -19,6 +19,7 @@ use crate::{
     ACTIVE_NAME,
     MAJORITY_PRODUCERS_PERMISSION_NAME,
     MINORITY_PRODUCERS_PERMISSION_NAME,
+    EOSIO_NAME,
     PRODS_NAME,
     PULSE_NAME,
     block::{
@@ -146,6 +147,14 @@ pub static APPLY_HANDLERS: LazyLock<ApplyHandlerMap> = LazyLock::new(|| {
     m.insert((PULSE_NAME, PULSE_NAME, DELETEAUTH_NAME), deleteauth);
     m.insert((PULSE_NAME, PULSE_NAME, LINKAUTH_NAME), linkauth);
     m.insert((PULSE_NAME, PULSE_NAME, UNLINKAUTH_NAME), unlinkauth);
+    // eosio-compat: the same native handlers for chains whose system account is `eosio`.
+    m.insert((EOSIO_NAME, EOSIO_NAME, NEWACCOUNT_NAME), newaccount);
+    m.insert((EOSIO_NAME, EOSIO_NAME, SETCODE_NAME), setcode);
+    m.insert((EOSIO_NAME, EOSIO_NAME, SETABI_NAME), setabi);
+    m.insert((EOSIO_NAME, EOSIO_NAME, UPDATEAUTH_NAME), updateauth);
+    m.insert((EOSIO_NAME, EOSIO_NAME, DELETEAUTH_NAME), deleteauth);
+    m.insert((EOSIO_NAME, EOSIO_NAME, LINKAUTH_NAME), linkauth);
+    m.insert((EOSIO_NAME, EOSIO_NAME, UNLINKAUTH_NAME), unlinkauth);
     m
 });
 

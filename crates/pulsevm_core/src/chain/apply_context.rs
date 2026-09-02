@@ -34,6 +34,7 @@ use pulsevm_serialization::Write;
 
 use crate::{
     CODE_NAME,
+    EOSIO_CODE_NAME,
     chain::{
         authority::PermissionLevel,
         authorization_manager::AuthorizationManager,
@@ -394,6 +395,7 @@ impl ApplyContext {
 
             let mut provided_permissions = BTreeSet::new();
             provided_permissions.insert(PermissionLevel::new(*self.receiver, CODE_NAME.into()));
+            provided_permissions.insert(PermissionLevel::new(*self.receiver, EOSIO_CODE_NAME.into()));
             let inner = self.inner.read()?;
 
             if !inner.privileged {
