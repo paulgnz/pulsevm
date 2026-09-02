@@ -6,7 +6,7 @@ those rows into the arena-backed chain database through the same canonical
 `hydrate_*` layouts the pure-Rust genesis path uses. Decode stays in
 `pulsevm_snapshot`, state layout stays in `pulsevm_chaindb`; this crate only
 translates between them. See the crate docs on `lib.rs` for exactly what is
-written, what is counted-but-skipped, and the K1-only key restriction.
+written, what is counted-but-skipped, and how authority keys (K1/R1/WebAuthn) are packed.
 
 ## Verification harness
 
