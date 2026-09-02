@@ -52,8 +52,8 @@ fn imports_the_xpr_testnet_snapshot() {
         65769
     );
     assert_eq!(report.permissions.reserved_skipped, 1);
-    assert_eq!(report.permissions.r1_keys_skipped, 6);
-    assert_eq!(report.permissions.webauthn_keys_skipped, 1016);
+    assert_eq!(report.permissions.r1_keys, 6);
+    assert_eq!(report.permissions.webauthn_keys, 1016);
     assert_eq!(report.permissions.k1_keys, 64088);
     assert_eq!(report.permission_links, 862);
     assert_eq!(report.contract_tables.tables, 75327);

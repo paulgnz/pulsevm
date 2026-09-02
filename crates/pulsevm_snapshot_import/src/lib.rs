@@ -22,18 +22,22 @@
 //! - account RAM corrections,
 //! - activated protocol features (no feature-activation framework upstream).
 //!
-//! Key support: the workspace's consensus crypto is K1-only, so R1 and
-//! WebAuthn keys inside imported authorities are dropped (counted and logged
-//! per import; see `TODO(crypto)` in [`encode_authority_k1`]). A permission
-//! whose keys are all dropped keeps its accounts/waits and simply cannot be
-//! satisfied by key until upstream grows R1/WebAuthn support.
+//! Key support: K1, R1 and WebAuthn keys are all carried. Each key is packed
+//! through `pulsevm_crypto::AuthorityPublicKey::to_packed` (the canonical
+//! Antelope tagged form the authority checker reads back), so imported
+//! authorities verify against the same signatures they accepted on the source
+//! chain. A key that fails canonical validation is an import error, never a
+//! silent drop.
 
 use pulsevm_chaindb::{
     ChainConfigParams,
     ChainDatabase,
     ElasticParams,
 };
-use pulsevm_crypto::Digest;
+use pulsevm_crypto::{
+    AuthorityPublicKey,
+    Digest,
+};
 use pulsevm_snapshot::{
     AccountMetadataRow,
     AccountRow,
@@ -58,7 +62,6 @@ use pulsevm_snapshot::{
 };
 use spdlog::{
     info,
-    warn,
 };
 
 mod error;
@@ -97,8 +100,7 @@ pub struct ImportReport {
     pub protocol_features_skipped: u64,
 }
 
-/// Permission-section outcome, including the key material that could not be
-/// carried (the workspace's consensus crypto is K1-only).
+/// Permission-section outcome, with the key material carried by type.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PermissionImportStats {
     /// Permission rows written (the reserved permission 0 is not one of them).
@@ -107,12 +109,10 @@ pub struct PermissionImportStats {
     pub reserved_skipped: u64,
     /// K1 keys carried into authority blobs.
     pub k1_keys: u64,
-    /// R1 keys dropped — pending upstream R1 support.
-    pub r1_keys_skipped: u64,
-    /// WebAuthn keys dropped — pending upstream WebAuthn support.
-    pub webauthn_keys_skipped: u64,
-    /// Permissions that lost at least one key to the K1-only restriction.
-    pub permissions_with_dropped_keys: u64,
+    /// R1 keys carried into authority blobs.
+    pub r1_keys: u64,
+    /// WebAuthn keys carried into authority blobs.
+    pub webauthn_keys: u64,
 }
 
 /// Contract-tables-section outcome: the table rows plus every index family.
@@ -206,14 +206,14 @@ pub fn import_chainstate_scaled(
         snapshot.protocol_state()?.activated_protocol_features.len() as u64;
 
     info!(
-        "snapshot import complete: chain {} head {} — {} accounts, {} permissions ({} K1 keys kept, {} R1 + {} WebAuthn dropped), {} code objects, {} tables / {} kv rows, {} links, {} dedupe txs",
+        "snapshot import complete: chain {} head {} — {} accounts, {} permissions ({} K1 + {} R1 + {} WebAuthn keys carried), {} code objects, {} tables / {} kv rows, {} links, {} dedupe txs",
         report.chain_id,
         report.head_block_num,
         report.accounts,
         report.permissions.written,
         report.permissions.k1_keys,
-        report.permissions.r1_keys_skipped,
-        report.permissions.webauthn_keys_skipped,
+        report.permissions.r1_keys,
+        report.permissions.webauthn_keys,
         report.code_objects,
         report.contract_tables.tables,
         report.contract_tables.key_values,
@@ -440,7 +440,13 @@ pub fn import_permissions(
                 }
             })?,
         };
-        let auth = encode_authority_k1(&row.auth, &mut stats);
+        let auth = encode_authority(&row.auth, &mut stats).map_err(|reason| {
+            ImportError::InvalidAuthorityKey {
+                owner: row.owner.to_string(),
+                name: row.name.to_string(),
+                reason,
+            }
+        })?;
         bytes.extend_from_slice(&owner.to_le_bytes());
         bytes.extend_from_slice(&name.to_le_bytes());
         bytes.extend_from_slice(&(cb_id as u64).to_le_bytes());
@@ -452,12 +458,6 @@ pub fn import_permissions(
         stats.written += 1;
     }
     db.hydrate_permissions(&bytes)?;
-    if stats.r1_keys_skipped + stats.webauthn_keys_skipped > 0 {
-        warn!(
-            "snapshot import dropped non-K1 key material: {} R1 keys and {} WebAuthn keys across {} permissions (consensus crypto is K1-only)",
-            stats.r1_keys_skipped, stats.webauthn_keys_skipped, stats.permissions_with_dropped_keys,
-        );
-    }
     Ok(stats)
 }
 
@@ -628,42 +628,32 @@ pub fn import_transactions(
 }
 
 /// Encodes a snapshot authority in the arena's `shared_authority` blob layout,
-/// keeping only K1 keys.
-///
-/// TODO(crypto): carry R1 and WebAuthn keys once `pulsevm_crypto` grows
-/// support for them — until then they are counted into `stats` (and logged by
-/// the permission import) rather than silently lost. Accounts and waits are
-/// carried in full, so a permission that loses every key remains satisfiable
-/// through its account delegations, or not at all — never trivially.
-fn encode_authority_k1(auth: &SnapshotAuthority, stats: &mut PermissionImportStats) -> Vec<u8> {
-    let k1_keys: Vec<&pulsevm_snapshot::SnapshotKeyWeight> = auth
-        .keys
-        .iter()
-        .filter(|kw| match kw.key {
-            SnapshotPublicKey::K1(_) => true,
-            SnapshotPublicKey::R1(_) => {
-                stats.r1_keys_skipped += 1;
-                false
-            }
-            SnapshotPublicKey::WebAuthn(_) => {
-                stats.webauthn_keys_skipped += 1;
-                false
-            }
-        })
-        .collect();
-    if k1_keys.len() != auth.keys.len() {
-        stats.permissions_with_dropped_keys += 1;
+/// carrying every key type (K1, R1, WebAuthn) in the canonical packed form
+/// `AuthorityPublicKey::to_packed` produces — the same bytes the authority
+/// checker parses back with `from_packed`. Accounts and waits are carried in
+/// full. Returns the validation reason if a key is not a canonical point.
+fn encode_authority(
+    auth: &SnapshotAuthority,
+    stats: &mut PermissionImportStats,
+) -> Result<Vec<u8>, String> {
+    let mut packed_keys: Vec<(Vec<u8>, u16)> = Vec::with_capacity(auth.keys.len());
+    for kw in &auth.keys {
+        match kw.key {
+            SnapshotPublicKey::K1(_) => stats.k1_keys += 1,
+            SnapshotPublicKey::R1(_) => stats.r1_keys += 1,
+            SnapshotPublicKey::WebAuthn(_) => stats.webauthn_keys += 1,
+        }
+        let key = AuthorityPublicKey::try_from(&kw.key).map_err(|e| e.to_string())?;
+        packed_keys.push((key.to_packed(), kw.weight));
     }
-    stats.k1_keys += k1_keys.len() as u64;
 
     let mut out = Vec::new();
     out.extend_from_slice(&auth.threshold.to_le_bytes());
-    out.extend_from_slice(&(k1_keys.len() as u32).to_le_bytes());
-    for kw in k1_keys {
-        let packed = kw.key.to_tagged_point();
+    out.extend_from_slice(&(packed_keys.len() as u32).to_le_bytes());
+    for (packed, weight) in packed_keys {
         out.extend_from_slice(&(packed.len() as u32).to_le_bytes());
         out.extend_from_slice(&packed);
-        out.extend_from_slice(&kw.weight.to_le_bytes());
+        out.extend_from_slice(&weight.to_le_bytes());
     }
     out.extend_from_slice(&(auth.accounts.len() as u32).to_le_bytes());
     for a in &auth.accounts {
@@ -676,7 +666,7 @@ fn encode_authority_k1(auth: &SnapshotAuthority, stats: &mut PermissionImportSta
         out.extend_from_slice(&w.wait_sec.to_le_bytes());
         out.extend_from_slice(&w.weight.to_le_bytes());
     }
-    out
+    Ok(out)
 }
 
 /// Maps the snapshot's elastic limit parameters onto the arena's.

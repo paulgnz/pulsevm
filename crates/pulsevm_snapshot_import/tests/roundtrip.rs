@@ -11,8 +11,10 @@ use pulsevm_chain_types::{
 };
 use pulsevm_chaindb::ChainDatabase;
 use pulsevm_crypto::{
+    AuthorityPublicKey,
     Bytes,
     Digest,
+    K1PrivateKey,
 };
 use pulsevm_name::Name;
 use pulsevm_snapshot::{
@@ -236,8 +238,22 @@ fn code_round_trips_and_rejects_a_bad_hash() {
 }
 
 fn k1_key(byte: u8) -> SnapshotPublicKey {
-    SnapshotPublicKey::K1([byte; 33])
+    // A real secp256k1 point: the authority packer validates every key.
+    let packed = K1PrivateKey::from_scalar(&[byte; 32])
+        .unwrap()
+        .public_key()
+        .to_packed();
+    let mut point = [0u8; 33];
+    point.copy_from_slice(&packed[1..]);
+    SnapshotPublicKey::K1(point)
 }
+
+/// The P-256 generator point, compressed — a valid R1 / WebAuthn key.
+const R1_G: [u8; 33] = [
+    0x03, 0x6b, 0x17, 0xd1, 0xf2, 0xe1, 0x2c, 0x42, 0x47, 0xf8, 0xbc, 0xe6, 0xe5, 0x63, 0xa4, 0x40,
+    0xf2, 0x77, 0x03, 0x7d, 0x81, 0x2d, 0xeb, 0x33, 0xa0, 0xf4, 0xa1, 0x39, 0x45, 0xd8, 0x98, 0xc2,
+    0x96,
+];
 
 fn auth(threshold: u32, keys: Vec<SnapshotKeyWeight>) -> SnapshotAuthority {
     SnapshotAuthority {
@@ -252,7 +268,7 @@ fn auth(threshold: u32, keys: Vec<SnapshotKeyWeight>) -> SnapshotAuthority {
 /// importer's encoding — used to state the expected bytes independently.
 fn auth_blob(
     threshold: u32,
-    keys: &[([u8; 34], u16)],
+    keys: &[(Vec<u8>, u16)],
     accounts: &[(u64, u64, u16)],
     waits: &[(u32, u16)],
 ) -> Vec<u8> {
@@ -279,7 +295,7 @@ fn auth_blob(
 }
 
 #[test]
-fn permissions_author_ids_resolve_parents_and_drop_non_k1_keys() {
+fn permissions_author_ids_resolve_parents_and_carry_all_key_types() {
     let d = db();
     let rows = vec![
         // The reserved permission chainbase creates at id 0.
@@ -319,12 +335,12 @@ fn permissions_author_ids_resolve_parents_and_drop_non_k1_keys() {
                         weight: 1,
                     },
                     SnapshotKeyWeight {
-                        key: SnapshotPublicKey::R1([4; 33]),
+                        key: SnapshotPublicKey::R1(R1_G),
                         weight: 1,
                     },
                     SnapshotKeyWeight {
                         key: SnapshotPublicKey::WebAuthn(WebAuthnPublicKey {
-                            key: [5; 33],
+                            key: R1_G,
                             user_presence: 1,
                             rpid: "example.com".into(),
                         }),
@@ -355,9 +371,8 @@ fn permissions_author_ids_resolve_parents_and_drop_non_k1_keys() {
     assert_eq!(stats.written, 3);
     assert_eq!(stats.reserved_skipped, 1);
     assert_eq!(stats.k1_keys, 2);
-    assert_eq!(stats.r1_keys_skipped, 1);
-    assert_eq!(stats.webauthn_keys_skipped, 1);
-    assert_eq!(stats.permissions_with_dropped_keys, 1);
+    assert_eq!(stats.r1_keys, 1);
+    assert_eq!(stats.webauthn_keys, 1);
 
     let alice = name("alice").as_u64();
     // Ids were authored in row order from 1; parents resolve through them.
@@ -372,11 +387,32 @@ fn permissions_author_ids_resolve_parents_and_drop_non_k1_keys() {
         Some(8)
     );
 
-    // The active permission's auth blob: the K1 key kept, R1/WebAuthn dropped,
-    // accounts and waits carried in full.
+    // The active permission's auth blob: K1, R1 and WebAuthn keys all carried
+    // in canonical packed form, accounts and waits carried in full.
     let expected_active = auth_blob(
         2,
-        &[(SnapshotPublicKey::K1([3; 33]).to_tagged_point(), 1)],
+        &[
+            (
+                AuthorityPublicKey::try_from(&k1_key(3)).unwrap().to_packed(),
+                1,
+            ),
+            (
+                AuthorityPublicKey::try_from(&SnapshotPublicKey::R1(R1_G))
+                    .unwrap()
+                    .to_packed(),
+                1,
+            ),
+            (
+                AuthorityPublicKey::try_from(&SnapshotPublicKey::WebAuthn(WebAuthnPublicKey {
+                    key: R1_G,
+                    user_presence: 1,
+                    rpid: "example.com".into(),
+                }))
+                .unwrap()
+                .to_packed(),
+                1,
+            ),
+        ],
         &[(name("bob").as_u64(), name("active").as_u64(), 1)],
         &[(30, 1)],
     );

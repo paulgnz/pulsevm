@@ -24,10 +24,24 @@
 use std::collections::HashMap;
 
 use pulsevm_chaindb::ChainDatabase;
+use pulsevm_crypto::{
+    AuthorityPublicKey,
+    K1PrivateKey,
+};
+
+/// A real secp256k1 point for test authorities (the packer validates keys).
+fn k1_point(byte: u8) -> [u8; 33] {
+    let packed = K1PrivateKey::from_scalar(&[byte; 32])
+        .unwrap()
+        .public_key()
+        .to_packed();
+    let mut point = [0u8; 33];
+    point.copy_from_slice(&packed[1..]);
+    point
+}
 use pulsevm_snapshot::{
     SnapshotAuthority,
     SnapshotElasticLimitParameters,
-    SnapshotPublicKey,
     SnapshotReader,
     UsageAccumulator,
     testing::{
@@ -105,21 +119,17 @@ fn put_acc(out: &mut Vec<u8>, acc: &UsageAccumulator) {
 }
 
 /// The arena `shared_authority` blob a snapshot authority must land as:
-/// threshold, then the K1 keys only (each as a length-prefixed 34-byte tagged
-/// point + weight), then accounts and waits in full. R1/WebAuthn keys are
-/// dropped by the import (consensus crypto is K1-only) and therefore must not
-/// appear in state.
+/// threshold, then every key (K1, R1, WebAuthn) as a length-prefixed canonical
+/// `AuthorityPublicKey::to_packed` form + weight, then accounts and waits in
+/// full.
 fn expected_auth_blob(auth: &SnapshotAuthority) -> Vec<u8> {
-    let k1: Vec<_> = auth
-        .keys
-        .iter()
-        .filter(|kw| matches!(kw.key, SnapshotPublicKey::K1(_)))
-        .collect();
     let mut out = Vec::new();
     out.extend_from_slice(&auth.threshold.to_le_bytes());
-    out.extend_from_slice(&(k1.len() as u32).to_le_bytes());
-    for kw in k1 {
-        let packed = kw.key.to_tagged_point();
+    out.extend_from_slice(&(auth.keys.len() as u32).to_le_bytes());
+    for kw in &auth.keys {
+        let packed = AuthorityPublicKey::try_from(&kw.key)
+            .expect("source snapshot keys are canonical")
+            .to_packed();
         out.extend_from_slice(&(packed.len() as u32).to_le_bytes());
         out.extend_from_slice(&packed);
         out.extend_from_slice(&kw.weight.to_le_bytes());
@@ -669,11 +679,11 @@ fn mini_snapshot_import_agrees_with_the_source_truth() {
         accounts: vec![
             TestAccount {
                 name: "alice".parse().unwrap(),
-                key: [2u8; 33],
+                key: k1_point(2),
             },
             TestAccount {
                 name: "bob".parse().unwrap(),
-                key: [3u8; 33],
+                key: k1_point(3),
             },
         ],
     };
